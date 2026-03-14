@@ -5112,6 +5112,7 @@ final class Workspace: Identifiable, ObservableObject {
             appearance: appearance
         )
         self.bonsplitController = BonsplitController(configuration: config)
+        bonsplitController.extraTabBarLeadingButtons = AnyView(EditorSyncTitlebarButton(config: nil))
         bonsplitController.contextMenuShortcuts = Self.buildContextMenuShortcuts()
 
         // Remove the default "Welcome" tab that bonsplit creates
