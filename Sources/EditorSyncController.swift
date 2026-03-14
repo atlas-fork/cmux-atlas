@@ -1,5 +1,4 @@
 import AppKit
-import Combine
 import Foundation
 
 /// Automatically opens the selected workspace's directory in an external editor
@@ -87,7 +86,7 @@ final class EditorSyncController: ObservableObject {
 
     /// Called when the selected workspace changes. Opens the workspace's directory
     /// in the configured editor after a debounce delay.
-    func workspaceDidChange(directory: String?) {
+    func workspaceDidChange(directory: String?, activate: Bool = false) {
         guard isEnabled else { return }
         guard let directory, !directory.isEmpty else { return }
 
@@ -97,7 +96,7 @@ final class EditorSyncController: ObservableObject {
         debounceTask = Task { [weak self] in
             try? await Task.sleep(for: self?.debounceInterval ?? .milliseconds(300))
             guard !Task.isCancelled else { return }
-            self?.openDirectoryInEditor(directory)
+            self?.openDirectoryInEditor(directory, activate: activate)
         }
     }
 
@@ -105,23 +104,23 @@ final class EditorSyncController: ObservableObject {
     func openCurrentDirectoryNow(activate: Bool = true) {
         guard let directory = currentWorkspaceDirectory(), !directory.isEmpty else { return }
         lastOpenedDirectory = nil  // Force re-open even if same directory
-        openDirectoryInEditor(directory)
+        openDirectoryInEditor(directory, activate: activate)
     }
 
     // MARK: - Editor Open (CLI-based, single window)
 
     /// Opens a directory in the configured external editor, reusing the existing window.
-    private func openDirectoryInEditor(_ directory: String) {
+    private func openDirectoryInEditor(_ directory: String, activate: Bool) {
         // Don't re-open if it's the same directory
         guard directory != lastOpenedDirectory else { return }
         lastOpenedDirectory = directory
 
         // Use CLI commands with --reuse-window to keep a single editor window
         if let cliArgs = cliCommand(for: targetEditor, directory: directory) {
-            launchCLI(cliArgs)
+            launchCLI(cliArgs, activate: activate)
         } else {
             // Fallback: NSWorkspace.open for editors without a known CLI
-            fallbackOpen(directory: directory)
+            fallbackOpen(directory: directory, activate: activate)
         }
     }
 
@@ -162,9 +161,9 @@ final class EditorSyncController: ObservableObject {
             return nil
 
         case .zed:
-            // Zed reuses the existing window by default
+            // Zed needs --reuse to replace the current workspace instead of opening a new window
             if let cli = findCLI(names: ["zed"]) {
-                return [cli, directory]
+                return [cli, "--reuse", directory]
             }
             return nil
 
@@ -198,7 +197,7 @@ final class EditorSyncController: ObservableObject {
     }
 
     /// Launches a CLI command in the background without blocking.
-    private func launchCLI(_ arguments: [String]) {
+    private func launchCLI(_ arguments: [String], activate: Bool) {
         guard let executable = arguments.first else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -220,22 +219,35 @@ final class EditorSyncController: ObservableObject {
             try process.run()
         } catch {
             // Silently ignore — editor may not be available
+            return
         }
+
+        restoreCmuxFocusIfNeeded(activateEditor: activate)
     }
 
     /// Fallback: use NSWorkspace.open for editors without CLI support.
-    private func fallbackOpen(directory: String) {
+    private func fallbackOpen(directory: String, activate: Bool) {
         let directoryURL = URL(fileURLWithPath: directory, isDirectory: true)
         guard let applicationURL = targetEditor.applicationURL() else { return }
 
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = false
+        configuration.activates = activate
 
         NSWorkspace.shared.open(
             [directoryURL],
             withApplicationAt: applicationURL,
             configuration: configuration
         )
+
+        restoreCmuxFocusIfNeeded(activateEditor: activate)
+    }
+
+    private func restoreCmuxFocusIfNeeded(activateEditor: Bool) {
+        guard !activateEditor else { return }
+        let currentApp = NSRunningApplication.current
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            currentApp.activate(options: [])
+        }
     }
 
     // MARK: - Available Editors

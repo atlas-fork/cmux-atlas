@@ -2010,6 +2010,8 @@ class TerminalController {
             return v2Result(id: id, self.v2DebugType(params: params))
         case "debug.app.activate":
             return v2Result(id: id, self.v2DebugActivateApp())
+        case "debug.app.quit":
+            return v2Result(id: id, self.v2DebugQuitApp())
         case "debug.command_palette.toggle":
             return v2Result(id: id, self.v2DebugToggleCommandPalette(params: params))
         case "debug.command_palette.rename_tab.open":
@@ -2062,6 +2064,10 @@ class TerminalController {
             return v2Result(id: id, self.v2DebugPanelSnapshotReset(params: params))
         case "debug.window.screenshot":
             return v2Result(id: id, self.v2DebugScreenshot(params: params))
+        case "debug.ai_sessions":
+            return v2Result(id: id, self.v2DebugAISessions(params: params))
+        case "debug.ai_session.resume":
+            return v2Result(id: id, self.v2DebugResumeAISession(params: params))
 #endif
 
         default:
@@ -2235,6 +2241,7 @@ class TerminalController {
             "debug.shortcut.simulate",
             "debug.type",
             "debug.app.activate",
+            "debug.app.quit",
             "debug.command_palette.toggle",
             "debug.command_palette.rename_tab.open",
             "debug.command_palette.visible",
@@ -2261,6 +2268,8 @@ class TerminalController {
             "debug.panel_snapshot",
             "debug.panel_snapshot.reset",
             "debug.window.screenshot",
+            "debug.ai_sessions",
+            "debug.ai_session.resume",
         ])
 #endif
 
@@ -9079,6 +9088,13 @@ class TerminalController {
         return resp == "OK" ? .ok([:]) : .err(code: "internal_error", message: resp, data: nil)
     }
 
+    private func v2DebugQuitApp() -> V2CallResult {
+        DispatchQueue.main.async {
+            NSApp.terminate(nil)
+        }
+        return .ok(["terminating": true])
+    }
+
     private func v2DebugToggleCommandPalette(params: [String: Any]) -> V2CallResult {
         let requestedWindowId = v2UUID(params, "window_id")
         var result: V2CallResult = .ok([:])
@@ -9400,6 +9416,134 @@ class TerminalController {
             return .err(code: "internal_error", message: "render_stats JSON decode failed", data: ["payload": String(jsonStr.prefix(200))])
         }
         return .ok(["stats": obj])
+    }
+
+    private func v2DebugAISessions(params: [String: Any]) -> V2CallResult {
+        guard let tabManager else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+
+        let shouldRefresh = v2Bool(params, "refresh") ?? false
+        var workspaces: [[String: Any]] = []
+
+        let collectPayload = {
+            if shouldRefresh {
+                for workspace in tabManager.tabs {
+                    workspace.refreshAISessionCacheNowForTerminalPanels()
+                }
+            }
+
+            workspaces = tabManager.tabs.map { workspace in
+                let panels = workspace.panels.keys
+                    .sorted { $0.uuidString < $1.uuidString }
+                    .compactMap { panelId -> [String: Any]? in
+                        guard let panel = workspace.panels[panelId], panel.panelType == .terminal else {
+                            return nil
+                        }
+                        return [
+                            "surface_id": panelId.uuidString,
+                            "surface_ref": self.v2Ref(kind: .surface, uuid: panelId),
+                            "panel_type": panel.panelType.rawValue,
+                            "directory": self.v2OrNull(workspace.panelDirectories[panelId]),
+                            "tty_name": self.v2OrNull(workspace.surfaceTTYNames[panelId]),
+                            "cached_session": self.v2AISessionSnapshotPayload(workspace.cachedAISessions[panelId]),
+                            "restored_session": self.v2AISessionSnapshotPayload(workspace.restoredAISessions[panelId]),
+                        ]
+                    }
+                return [
+                    "workspace_id": workspace.id.uuidString,
+                    "workspace_ref": self.v2Ref(kind: .workspace, uuid: workspace.id),
+                    "title": workspace.title,
+                    "current_directory": workspace.currentDirectory,
+                    "selected": tabManager.selectedTabId == workspace.id,
+                    "panels": panels,
+                ]
+            }
+        }
+
+        if Thread.isMainThread {
+            collectPayload()
+        } else {
+            DispatchQueue.main.sync {
+                collectPayload()
+            }
+        }
+
+        return .ok(["workspaces": workspaces])
+    }
+
+    private func v2DebugResumeAISession(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2UUID(params, "surface_id") ?? v2UUID(params, "tab_id") else {
+            return .err(
+                code: "invalid_params",
+                message: "surface_id is required",
+                data: nil
+            )
+        }
+        guard let tabManager else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+
+        var result: V2CallResult = .err(
+            code: "not_found",
+            message: "No restored AI session found for surface",
+            data: ["surface_id": surfaceId.uuidString]
+        )
+
+        let resume = {
+            for workspace in tabManager.tabs {
+                guard let panel = workspace.panels[surfaceId] as? TerminalPanel else { continue }
+                guard let session = workspace.restoredAISessions[surfaceId] else {
+                    result = .err(
+                        code: "not_found",
+                        message: "No restored AI session found for surface",
+                        data: ["surface_id": surfaceId.uuidString]
+                    )
+                    return
+                }
+                guard let resumeCommand = session.resumeCommand, !resumeCommand.isEmpty else {
+                    result = .err(
+                        code: "invalid_state",
+                        message: "Restored AI session has no resume command",
+                        data: ["surface_id": surfaceId.uuidString]
+                    )
+                    return
+                }
+
+                panel.sendText(resumeCommand + "\r")
+                workspace.restoredAISessions.removeValue(forKey: surfaceId)
+                result = .ok([
+                    "surface_id": surfaceId.uuidString,
+                    "surface_ref": self.v2Ref(kind: .surface, uuid: surfaceId),
+                    "agent_type": session.agentType.rawValue,
+                    "resume_command": resumeCommand,
+                ])
+                return
+            }
+        }
+
+        if Thread.isMainThread {
+            resume()
+        } else {
+            DispatchQueue.main.sync {
+                resume()
+            }
+        }
+
+        return result
+    }
+
+    private func v2AISessionSnapshotPayload(_ snapshot: AISessionSnapshot?) -> Any {
+        guard let snapshot else { return NSNull() }
+        return [
+            "agent_type": snapshot.agentType.rawValue,
+            "session_id": v2OrNull(snapshot.sessionId),
+            "working_directory": v2OrNull(snapshot.workingDirectory),
+            "command": v2OrNull(snapshot.command),
+            "project_path": v2OrNull(snapshot.projectPath),
+            "last_seen_active": snapshot.lastSeenActive,
+            "resume_command": v2OrNull(snapshot.resumeCommand),
+        ]
     }
 
     private func v2DebugLayout() -> V2CallResult {
@@ -13689,7 +13833,7 @@ class TerminalController {
             }
 
             guard tab.surfaceTTYNames[surfaceId] != ttyName else { return }
-            tab.surfaceTTYNames[surfaceId] = ttyName
+            tab.updatePanelTTY(panelId: surfaceId, ttyName: ttyName)
             PortScanner.shared.registerTTY(workspaceId: tab.id, panelId: surfaceId, ttyName: ttyName)
         }
         return result

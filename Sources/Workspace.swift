@@ -121,7 +121,13 @@ extension Workspace {
 
         let panelSnapshots = allPanelIds
             .prefix(SessionPersistencePolicy.maxPanelsPerWorkspace)
-            .compactMap { sessionPanelSnapshot(panelId: $0, includeScrollback: includeScrollback) }
+            .compactMap {
+                sessionPanelSnapshot(
+                    panelId: $0,
+                    includeScrollback: includeScrollback,
+                    includeLiveAISessionDetection: includeScrollback
+                )
+            }
 
         let statusSnapshots = statusEntries.values
             .sorted { lhs, rhs in lhs.key < rhs.key }
@@ -168,6 +174,9 @@ extension Workspace {
 
     func restoreSessionSnapshot(_ snapshot: SessionWorkspaceSnapshot) {
         restoredTerminalScrollbackByPanelId.removeAll(keepingCapacity: false)
+        restoredAISessions.removeAll(keepingCapacity: false)
+        cachedAISessions.removeAll(keepingCapacity: false)
+        aiSessionRefreshGenerationByPanel.removeAll(keepingCapacity: false)
 
         let normalizedCurrentDirectory = snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !normalizedCurrentDirectory.isEmpty {
@@ -221,6 +230,7 @@ extension Workspace {
         gitBranch = snapshot.gitBranch.map { SidebarGitBranchState(branch: $0.branch, isDirty: $0.isDirty) }
 
         recomputeListeningPorts()
+        scheduleAISessionRefreshForTerminalPanels()
 
         if let focusedOldPanelId = snapshot.focusedPanelId,
            let focusedNewPanelId = oldToNewPanelIds[focusedOldPanelId],
@@ -291,7 +301,11 @@ extension Workspace {
         return decoded.id
     }
 
-    private func sessionPanelSnapshot(panelId: UUID, includeScrollback: Bool) -> SessionPanelSnapshot? {
+    private func sessionPanelSnapshot(
+        panelId: UUID,
+        includeScrollback: Bool,
+        includeLiveAISessionDetection: Bool
+    ) -> SessionPanelSnapshot? {
         guard let panel = panels[panelId] else { return nil }
 
         let panelTitle = panelTitle(panelId: panelId)
@@ -349,16 +363,12 @@ extension Workspace {
             markdownSnapshot = SessionMarkdownPanelSnapshot(filePath: mdPanel.filePath)
         }
 
-        // Detect AI coding agent sessions running in this terminal
-        let aiSession: AISessionSnapshot?
-        if panel.panelType == .terminal {
-            aiSession = AISessionDetector.detect(
-                ttyName: ttyName,
-                workingDirectory: directory ?? currentDirectory
-            )
-        } else {
-            aiSession = nil
-        }
+        let aiSession = aiSessionSnapshot(
+            forPanelId: panelId,
+            ttyName: ttyName,
+            workingDirectory: directory ?? currentDirectory,
+            includeLiveDetection: includeLiveAISessionDetection
+        )
 
         return SessionPanelSnapshot(
             id: panelId,
@@ -376,6 +386,32 @@ extension Workspace {
             markdown: markdownSnapshot,
             aiSession: aiSession
         )
+    }
+
+    private func aiSessionSnapshot(
+        forPanelId panelId: UUID,
+        ttyName: String?,
+        workingDirectory: String?,
+        includeLiveDetection: Bool
+    ) -> AISessionSnapshot? {
+        guard panels[panelId]?.panelType == .terminal else {
+            return nil
+        }
+
+        if includeLiveDetection {
+            let snapshot = AISessionDetector.detect(
+                ttyName: ttyName,
+                workingDirectory: workingDirectory
+            )
+            if let snapshot {
+                cachedAISessions[panelId] = snapshot
+            } else {
+                cachedAISessions.removeValue(forKey: panelId)
+            }
+            return snapshot
+        }
+
+        return cachedAISessions[panelId]
     }
 
     nonisolated static func resolvedSnapshotTerminalScrollback(
@@ -1015,10 +1051,17 @@ final class Workspace: Identifiable, ObservableObject {
     @Published var surfaceListeningPorts: [UUID: [Int]] = [:]
     @Published var listeningPorts: [Int] = []
     var surfaceTTYNames: [UUID: String] = [:]
+    /// Cached AI agent sessions refreshed outside the autosave hot path.
+    @Published private(set) var cachedAISessions: [UUID: AISessionSnapshot] = [:]
     /// AI agent sessions detected at snapshot time, keyed by the *new* panel ID after restore.
     /// The resume banner UI reads this to offer one-click resume.
     @Published var restoredAISessions: [UUID: AISessionSnapshot] = [:]
     private var restoredTerminalScrollbackByPanelId: [UUID: String] = [:]
+    private var aiSessionRefreshGenerationByPanel: [UUID: UUID] = [:]
+    private let aiSessionRefreshQueue = DispatchQueue(
+        label: "com.cmux.ai-session-refresh",
+        qos: .utility
+    )
 
     var focusedSurfaceId: UUID? { focusedPanelId }
     var surfaceDirectories: [UUID: String] {
@@ -1659,12 +1702,20 @@ final class Workspace: Identifiable, ObservableObject {
         if panelDirectories[panelId] != trimmed {
             panelDirectories[panelId] = trimmed
         }
+        scheduleAISessionRefresh(panelId: panelId)
         // Update current directory if this is the focused panel
         if panelId == focusedPanelId, currentDirectory != trimmed {
             currentDirectory = trimmed
             // Sync editor to the new directory (e.g. after `cd`)
-            EditorSyncController.shared.workspaceDidChange(directory: trimmed)
+            EditorSyncController.shared.workspaceDidChange(directory: trimmed, activate: false)
         }
+    }
+
+    func updatePanelTTY(panelId: UUID, ttyName: String) {
+        guard panels[panelId]?.panelType == .terminal else { return }
+        guard surfaceTTYNames[panelId] != ttyName else { return }
+        surfaceTTYNames[panelId] = ttyName
+        scheduleAISessionRefresh(panelId: panelId)
     }
 
     func updatePanelGitBranch(panelId: UUID, branch: String, isDirty: Bool) {
@@ -1771,6 +1822,10 @@ final class Workspace: Identifiable, ObservableObject {
             didMutate = true
         }
 
+        if didMutate, panels[panelId]?.panelType == .terminal {
+            scheduleAISessionRefresh(panelId: panelId)
+        }
+
         // Update bonsplit tab title only when this panel's title changed.
         if didMutate,
            let tabId = surfaceIdFromPanelId(panelId),
@@ -1798,6 +1853,82 @@ final class Workspace: Identifiable, ObservableObject {
         return didMutate
     }
 
+    func scheduleAISessionRefreshForTerminalPanels() {
+        let terminalPanelIds = panels.compactMap { panelId, panel in
+            panel.panelType == .terminal ? panelId : nil
+        }
+        for panelId in terminalPanelIds {
+            scheduleAISessionRefresh(panelId: panelId)
+        }
+    }
+
+    func refreshAISessionCacheNowForTerminalPanels() {
+        let terminalPanelIds = panels.compactMap { panelId, panel in
+            panel.panelType == .terminal ? panelId : nil
+        }
+        for panelId in terminalPanelIds {
+            refreshAISessionCacheNow(panelId: panelId)
+        }
+    }
+
+    private func scheduleAISessionRefresh(panelId: UUID, delay: TimeInterval = 0.4) {
+        guard panels[panelId]?.panelType == .terminal else {
+            cachedAISessions.removeValue(forKey: panelId)
+            aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
+            return
+        }
+
+        let ttyName = surfaceTTYNames[panelId]
+        let workingDirectory = panelDirectories[panelId] ?? currentDirectory
+        let generation = UUID()
+        aiSessionRefreshGenerationByPanel[panelId] = generation
+
+        aiSessionRefreshQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            let snapshot = AISessionDetector.detect(
+                ttyName: ttyName,
+                workingDirectory: workingDirectory
+            )
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard self.aiSessionRefreshGenerationByPanel[panelId] == generation else { return }
+                self.aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
+
+                guard self.panels[panelId]?.panelType == .terminal else {
+                    self.cachedAISessions.removeValue(forKey: panelId)
+                    return
+                }
+
+                if let snapshot {
+                    self.cachedAISessions[panelId] = snapshot
+                } else {
+                    self.cachedAISessions.removeValue(forKey: panelId)
+                }
+            }
+        }
+    }
+
+    private func refreshAISessionCacheNow(panelId: UUID) {
+        guard panels[panelId]?.panelType == .terminal else {
+            cachedAISessions.removeValue(forKey: panelId)
+            aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
+            return
+        }
+
+        aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
+        let ttyName = surfaceTTYNames[panelId]
+        let workingDirectory = panelDirectories[panelId] ?? currentDirectory
+        let snapshot = AISessionDetector.detect(
+            ttyName: ttyName,
+            workingDirectory: workingDirectory
+        )
+        if let snapshot {
+            cachedAISessions[panelId] = snapshot
+        } else {
+            cachedAISessions.removeValue(forKey: panelId)
+        }
+    }
+
     func pruneSurfaceMetadata(validSurfaceIds: Set<UUID>) {
         panelDirectories = panelDirectories.filter { validSurfaceIds.contains($0.key) }
         panelTitles = panelTitles.filter { validSurfaceIds.contains($0.key) }
@@ -1809,6 +1940,11 @@ final class Workspace: Identifiable, ObservableObject {
         surfaceListeningPorts = surfaceListeningPorts.filter { validSurfaceIds.contains($0.key) }
         surfaceTTYNames = surfaceTTYNames.filter { validSurfaceIds.contains($0.key) }
         panelPullRequests = panelPullRequests.filter { validSurfaceIds.contains($0.key) }
+        cachedAISessions = cachedAISessions.filter { validSurfaceIds.contains($0.key) }
+        restoredAISessions = restoredAISessions.filter { validSurfaceIds.contains($0.key) }
+        aiSessionRefreshGenerationByPanel = aiSessionRefreshGenerationByPanel.filter {
+            validSurfaceIds.contains($0.key)
+        }
         recomputeListeningPorts()
     }
 
@@ -4683,6 +4819,9 @@ extension Workspace: BonsplitDelegate {
         manualUnreadMarkedAt.removeValue(forKey: panelId)
         panelSubscriptions.removeValue(forKey: panelId)
         surfaceTTYNames.removeValue(forKey: panelId)
+        cachedAISessions.removeValue(forKey: panelId)
+        restoredAISessions.removeValue(forKey: panelId)
+        aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
         restoredTerminalScrollbackByPanelId.removeValue(forKey: panelId)
         PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)
         terminalInheritanceFontPointsByPanelId.removeValue(forKey: panelId)
@@ -4862,6 +5001,9 @@ extension Workspace: BonsplitDelegate {
                 manualUnreadPanelIds.remove(panelId)
                 panelSubscriptions.removeValue(forKey: panelId)
                 surfaceTTYNames.removeValue(forKey: panelId)
+                cachedAISessions.removeValue(forKey: panelId)
+                restoredAISessions.removeValue(forKey: panelId)
+                aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
                 surfaceListeningPorts.removeValue(forKey: panelId)
                 restoredTerminalScrollbackByPanelId.removeValue(forKey: panelId)
                 PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)

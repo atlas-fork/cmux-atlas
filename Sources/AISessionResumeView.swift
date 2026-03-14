@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 /// Banner shown at the top of a restored terminal when an AI agent session
@@ -30,8 +31,12 @@ struct AISessionResumeBanner: View {
 
             if session.resumeCommand != nil {
                 Button(action: onResume) {
-                    Label("Resume", systemImage: "play.fill")
-                        .font(.system(size: 11, weight: .medium))
+                    Label {
+                        Text(String(localized: "aiSession.banner.resume", defaultValue: "Resume"))
+                            .font(.system(size: 11, weight: .medium))
+                    } icon: {
+                        Image(systemName: "play.fill")
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(accentColor)
@@ -80,17 +85,34 @@ struct AISessionResumeBanner: View {
     private var title: String {
         switch session.agentType {
         case .claudeCode:
-            return "Claude Code session detected"
+            return String(
+                localized: "aiSession.banner.claudeDetected",
+                defaultValue: "Claude Code session detected"
+            )
         case .codex:
-            return "Codex session detected"
+            return String(
+                localized: "aiSession.banner.codexDetected",
+                defaultValue: "Codex session detected"
+            )
         }
     }
 
     private var detailText: String? {
+        let project = session.projectPath ??
+            session.workingDirectory ??
+            String(localized: "aiSession.banner.unknownProject", defaultValue: "unknown project")
         if let sessionId = session.sessionId {
             let shortId = String(sessionId.prefix(8))
-            return "Session \(shortId)… — \(session.projectPath ?? session.workingDirectory ?? "unknown project")"
+            return String(
+                format: String(
+                    localized: "aiSession.banner.detailWithSession",
+                    defaultValue: "Session %@... - %@"
+                ),
+                locale: Locale.current,
+                shortId,
+                project
+            )
         }
-        return session.projectPath ?? session.workingDirectory
+        return project
     }
 }

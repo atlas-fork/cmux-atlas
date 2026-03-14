@@ -2022,6 +2022,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var didAttemptStartupSessionRestore = false
     private var isApplyingStartupSessionRestore = false
     private var sessionAutosaveTimer: DispatchSourceTimer?
+    private var aiSessionCacheRefreshTimer: DispatchSourceTimer?
     private var sessionAutosaveTickInFlight = false
     private var sessionAutosaveDeferredRetryPending = false
     private var socketListenerHealthTimer: DispatchSourceTimer?
@@ -2057,6 +2058,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private static let commandPaletteRequestGraceInterval: TimeInterval = 1.25
     private static let commandPalettePendingOpenMaxAge: TimeInterval = 8.0
     private static let sessionAutosaveTypingQuietPeriod: TimeInterval = 0.65
+    private static let aiSessionCacheRefreshInterval: DispatchTimeInterval = .seconds(4)
 
     var updateViewModel: UpdateViewModel {
         updateController.viewModel
@@ -2499,6 +2501,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func completeStartupSessionRestore() {
         startupSessionSnapshot = nil
         isApplyingStartupSessionRestore = false
+        refreshAISessionCachesNowAcrossAllWorkspaces()
         _ = saveSessionSnapshot(includeScrollback: false)
     }
 
@@ -2857,13 +2860,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         sessionAutosaveTimer = timer
         timer.resume()
+
+        startAISessionCacheRefreshTimerIfNeeded()
     }
 
     private func stopSessionAutosaveTimer() {
         sessionAutosaveTimer?.cancel()
         sessionAutosaveTimer = nil
+        aiSessionCacheRefreshTimer?.cancel()
+        aiSessionCacheRefreshTimer = nil
         sessionAutosaveTickInFlight = false
         sessionAutosaveDeferredRetryPending = false
+    }
+
+    private func startAISessionCacheRefreshTimerIfNeeded() {
+        guard aiSessionCacheRefreshTimer == nil else { return }
+
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        let interval = Self.aiSessionCacheRefreshInterval
+        timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .seconds(1))
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.isTerminatingApp else { return }
+            self.scheduleAISessionCacheRefreshAcrossAllWorkspaces()
+        }
+        aiSessionCacheRefreshTimer = timer
+        timer.resume()
+    }
+
+    private func scheduleAISessionCacheRefreshAcrossAllWorkspaces() {
+        let contexts = mainWindowContexts.values.sorted { lhs, rhs in
+            lhs.windowId.uuidString < rhs.windowId.uuidString
+        }
+        for context in contexts {
+            for workspace in context.tabManager.tabs {
+                workspace.scheduleAISessionRefreshForTerminalPanels()
+            }
+        }
+    }
+
+    private func refreshAISessionCachesNowAcrossAllWorkspaces() {
+        let contexts = mainWindowContexts.values.sorted { lhs, rhs in
+            lhs.windowId.uuidString < rhs.windowId.uuidString
+        }
+        for context in contexts {
+            for workspace in context.tabManager.tabs {
+                workspace.refreshAISessionCacheNowForTerminalPanels()
+            }
+        }
     }
 
     private func installLifecycleSnapshotObserversIfNeeded() {
@@ -3209,13 +3252,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 #if DEBUG
         let fingerprintStart = ProcessInfo.processInfo.systemUptime
 #endif
-        let autosaveFingerprint = sessionAutosaveFingerprint(includeScrollback: true)
+        let autosaveFingerprint = sessionAutosaveFingerprint(includeScrollback: false)
 #if DEBUG
         fingerprintMs = (ProcessInfo.processInfo.systemUptime - fingerprintStart) * 1000.0
 #endif
         if Self.shouldSkipSessionAutosaveForUnchangedFingerprint(
             isTerminatingApp: isTerminatingApp,
-            includeScrollback: true,
+            includeScrollback: false,
             previousFingerprint: lastSessionAutosaveFingerprint,
             currentFingerprint: autosaveFingerprint,
             lastPersistedAt: lastSessionAutosavePersistedAt,
@@ -3223,7 +3266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ) {
 #if DEBUG
             dlog(
-                "session.save.skipped reason=unchanged_autosave_fingerprint includeScrollback=1 source=\(source)"
+                "session.save.skipped reason=unchanged_autosave_fingerprint includeScrollback=0 source=\(source)"
             )
 #endif
             return
@@ -3232,12 +3275,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 #if DEBUG
         let saveStart = ProcessInfo.processInfo.systemUptime
 #endif
-        _ = saveSessionSnapshot(includeScrollback: true)
+        _ = saveSessionSnapshot(includeScrollback: false)
 #if DEBUG
         saveMs = (ProcessInfo.processInfo.systemUptime - saveStart) * 1000.0
 #endif
         updateSessionAutosaveSaveState(
-            includeScrollback: true,
+            includeScrollback: false,
             persistedAt: now,
             fingerprint: autosaveFingerprint
         )

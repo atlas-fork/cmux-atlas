@@ -716,7 +716,11 @@ class TabManager: ObservableObject {
                 }
                 // Sync external editor to the newly selected workspace's directory
                 if let workspace = self.selectedWorkspace {
-                    EditorSyncController.shared.workspaceDidChange(directory: workspace.currentDirectory)
+                    EditorSyncController.shared.workspaceDidChange(
+                        directory: workspace.currentDirectory,
+                        activate: false
+                    )
+                    workspace.scheduleAISessionRefreshForTerminalPanels()
                 }
                 // Keep the directory hook up to date for immediate-open
                 EditorSyncController.shared.currentWorkspaceDirectory = { [weak self] in

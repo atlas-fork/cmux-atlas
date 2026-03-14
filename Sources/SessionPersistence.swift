@@ -123,6 +123,9 @@ enum SessionRestorePolicy {
         if environment["CMUX_DISABLE_SESSION_RESTORE"] == "1" {
             return false
         }
+        if environment["CMUX_FORCE_SESSION_RESTORE"] == "1" {
+            return true
+        }
         if isRunningUnderAutomatedTests(environment: environment) {
             return false
         }

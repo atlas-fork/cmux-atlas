@@ -1,11 +1,12 @@
+import Foundation
 import SwiftUI
 
 /// Tab bar button for editor sync. Left-click toggles sync on/off.
 /// Right-click shows a picker to choose the target editor.
 ///
 /// Shortcuts:
-/// - ⌘E        → Toggle sync on/off (shows picker if first time)
-/// - ⌘E, 1-9   → Pick editor by number (opens popover, press number)
+/// - ⇧⌘E        → Toggle sync on/off (shows picker if first time)
+/// - ⇧⌘E, 1-9   → Pick editor by number (opens popover, press number)
 struct EditorSyncTitlebarButton: View {
     /// When nil, uses tab-bar-native styling (12pt icon, no frame constraints).
     let config: TitlebarControlsStyleConfig?
@@ -57,11 +58,11 @@ struct EditorSyncTitlebarButton: View {
             editorContextMenu
         }
         .accessibilityIdentifier("titlebarControl.editorSync")
-        .accessibilityLabel("Editor Sync")
-        .help(editorSync.isEnabled
-            ? "Editor sync: \(editorDisplayName(editorSync.targetEditor)) (⌘E to toggle)"
-            : "Link an editor (⌘E)")
-        .keyboardShortcut("e", modifiers: .command)
+        .accessibilityLabel(
+            String(localized: "editorSync.accessibility.label", defaultValue: "Editor Sync")
+        )
+        .help(editorSyncHelpText)
+        .keyboardShortcut("e", modifiers: [.command, .shift])
 
         if let buttonSize {
             button.frame(width: buttonSize, height: buttonSize)
@@ -74,7 +75,7 @@ struct EditorSyncTitlebarButton: View {
 
     private var editorPickerPopover: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Link Editor  ⌘E")
+            Text(String(localized: "editorSync.popover.title", defaultValue: "Link Editor  ⇧⌘E"))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 8)
@@ -123,7 +124,12 @@ struct EditorSyncTitlebarButton: View {
             }
 
             if availableEditors.isEmpty {
-                Text("No supported editors installed")
+                Text(
+                    String(
+                        localized: "editorSync.popover.noEditors",
+                        defaultValue: "No supported editors installed"
+                    )
+                )
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 8)
@@ -137,10 +143,10 @@ struct EditorSyncTitlebarButton: View {
                     showingPicker = false
                 } label: {
                     HStack {
-                        Text("Disable Sync")
+                        Text(String(localized: "editorSync.popover.disable", defaultValue: "Disable Sync"))
                             .font(.system(size: 12))
                         Spacer()
-                        Text("⌘E")
+                        Text("⇧⌘E")
                             .font(.system(size: 9, design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
@@ -164,7 +170,17 @@ struct EditorSyncTitlebarButton: View {
                 selectEditor(editor)
             } label: {
                 HStack {
-                    Text("\(index + 1). \(editorDisplayName(editor))")
+                    Text(
+                        String(
+                            format: String(
+                                localized: "editorSync.context.item",
+                                defaultValue: "%lld. %@"
+                            ),
+                            locale: Locale.current,
+                            Int64(index + 1),
+                            editorDisplayName(editor)
+                        )
+                    )
                     if editor == editorSync.targetEditor && editorSync.isEnabled {
                         Image(systemName: "checkmark")
                     }
@@ -174,7 +190,7 @@ struct EditorSyncTitlebarButton: View {
 
         if editorSync.isEnabled {
             Divider()
-            Button("Disable Editor Sync") {
+            Button(String(localized: "editorSync.context.disable", defaultValue: "Disable Editor Sync")) {
                 editorSync.isEnabled = false
             }
         }
@@ -187,6 +203,23 @@ struct EditorSyncTitlebarButton: View {
         editorSync.isEnabled = true
         showingPicker = false
         editorSync.openCurrentDirectoryNow(activate: true)
+    }
+
+    private var editorSyncHelpText: String {
+        if editorSync.isEnabled {
+            return String(
+                format: String(
+                    localized: "editorSync.help.enabled",
+                    defaultValue: "Editor sync: %@ (⇧⌘E to toggle)"
+                ),
+                locale: Locale.current,
+                editorDisplayName(editorSync.targetEditor)
+            )
+        }
+        return String(
+            localized: "editorSync.help.disabled",
+            defaultValue: "Link an editor (⇧⌘E)"
+        )
     }
 
     // MARK: - Helpers

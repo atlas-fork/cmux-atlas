@@ -473,12 +473,9 @@ func resolveTerminalOpenURLTarget(_ rawValue: String) -> TerminalOpenURLTarget? 
         return .external(URL(fileURLWithPath: trimmed))
     }
 
-    // Relative paths to markdown files (e.g. "docs/story.md", "./README.md")
-    // These look like file paths but aren't absolute, so they'd otherwise be
-    // misinterpreted as URLs. Detect them early and mark for markdown rendering.
-    if (trimmed.lowercased().hasSuffix(".md") || trimmed.lowercased().hasSuffix(".markdown")),
-       !trimmed.contains("://"),
-       trimmed.rangeOfCharacter(from: CharacterSet(charactersIn: " ?#")) == nil {
+    // Relative markdown paths (e.g. "docs/story.md", "./README.md") should open natively,
+    // but scheme-less browser URLs like "github.com/org/repo/blob/main/README.md" should not.
+    if isLikelyRelativeMarkdownPath(trimmed) {
         #if DEBUG
         dlog("link.resolve result=markdownFile(relativePath) path=\(trimmed)")
         #endif
@@ -528,6 +525,33 @@ func resolveTerminalOpenURLTarget(_ rawValue: String) -> TerminalOpenURLTarget? 
     dlog("link.resolve result=external(fallback) url=\(fallback)")
     #endif
     return .external(fallback)
+}
+
+private func isLikelyRelativeMarkdownPath(_ value: String) -> Bool {
+    let lowercased = value.lowercased()
+    guard lowercased.hasSuffix(".md") || lowercased.hasSuffix(".markdown") else {
+        return false
+    }
+    guard !value.contains("://"),
+          value.rangeOfCharacter(from: CharacterSet(charactersIn: " ?#")) == nil else {
+        return false
+    }
+
+    let firstComponent = value.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        .first
+        .map(String.init) ?? value
+    if firstComponent == "." || firstComponent == ".." || !value.contains("/") {
+        return true
+    }
+
+    let lowerFirstComponent = firstComponent.lowercased()
+    if lowerFirstComponent == "localhost" ||
+        lowerFirstComponent.hasPrefix("127.0.0.1") ||
+        lowerFirstComponent.hasPrefix("[::1]") {
+        return false
+    }
+
+    return !firstComponent.contains(".")
 }
 
 enum TerminalKeyboardCopyModeSelectionMove: String, Equatable {
@@ -2351,14 +2375,17 @@ class GhosttyApp {
                     if NSString(string: relativePath).isAbsolutePath {
                         absolutePath = relativePath
                     } else {
-                        let baseDir = workspace.currentDirectory ?? FileManager.default.currentDirectoryPath
+                        let baseDir = workspace.currentDirectory
                         absolutePath = (baseDir as NSString).appendingPathComponent(relativePath)
                     }
                     let standardized = NSString(string: absolutePath).standardizingPath
                     guard FileManager.default.fileExists(atPath: standardized) else {
-                        #if DEBUG
+#if DEBUG
                         dlog("link.openURL markdownFile not found at \(standardized), falling back to external")
-                        #endif
+#endif
+                        if let webURL = resolveBrowserNavigableURL(relativePath) {
+                            return NSWorkspace.shared.open(webURL)
+                        }
                         NSWorkspace.shared.open(URL(fileURLWithPath: standardized))
                         return true
                     }
@@ -5872,6 +5899,7 @@ final class GhosttySurfaceScrollView: NSView {
     private let keyboardCopyModeBadgeView: GhosttyPassthroughVisualEffectView
     private let keyboardCopyModeBadgeIconView: NSImageView
     private let keyboardCopyModeBadgeLabel: NSTextField
+    private var aiSessionBannerHostingView: NSHostingView<AISessionResumeBanner>?
     private var searchOverlayHostingView: NSHostingView<SurfaceSearchOverlay>?
     private var lastSearchOverlayStateID: ObjectIdentifier?
     private var observers: [NSObjectProtocol] = []
@@ -6648,13 +6676,7 @@ final class GhosttySurfaceScrollView: NSView {
             overlay.rootView = rootView
             if overlay.superview !== self {
                 overlay.removeFromSuperview()
-                addSubview(overlay)
-                NSLayoutConstraint.activate([
-                    overlay.topAnchor.constraint(equalTo: topAnchor),
-                    overlay.bottomAnchor.constraint(equalTo: bottomAnchor),
-                    overlay.leadingAnchor.constraint(equalTo: leadingAnchor),
-                    overlay.trailingAnchor.constraint(equalTo: trailingAnchor),
-                ])
+                mountOverlayHostingView(overlay)
             }
             if !keyboardCopyModeBadgeContainerView.isHidden {
                 addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: overlay)
@@ -6665,19 +6687,78 @@ final class GhosttySurfaceScrollView: NSView {
 
         searchFocusTarget = .searchField
         let overlay = NSHostingView(rootView: rootView)
-        overlay.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(overlay)
-        NSLayoutConstraint.activate([
-            overlay.topAnchor.constraint(equalTo: topAnchor),
-            overlay.bottomAnchor.constraint(equalTo: bottomAnchor),
-            overlay.leadingAnchor.constraint(equalTo: leadingAnchor),
-            overlay.trailingAnchor.constraint(equalTo: trailingAnchor),
-        ])
+        mountOverlayHostingView(overlay)
         if !keyboardCopyModeBadgeContainerView.isHidden {
             addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: overlay)
         }
         searchOverlayHostingView = overlay
         lastSearchOverlayStateID = searchStateID
+    }
+
+    func setAISessionResumeBanner(
+        session: AISessionSnapshot?,
+        onResume: (() -> Void)?,
+        onDismiss: (() -> Void)?
+    ) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.setAISessionResumeBanner(session: session, onResume: onResume, onDismiss: onDismiss)
+            }
+            return
+        }
+
+        guard let session, let onResume, let onDismiss else {
+            aiSessionBannerHostingView?.removeFromSuperview()
+            aiSessionBannerHostingView = nil
+            return
+        }
+
+        let rootView = AISessionResumeBanner(
+            session: session,
+            onResume: onResume,
+            onDismiss: onDismiss
+        )
+
+        if let banner = aiSessionBannerHostingView {
+            banner.rootView = rootView
+            if banner.superview !== self {
+                mountTopBannerHostingView(banner)
+            }
+            return
+        }
+
+        let banner = NSHostingView(rootView: rootView)
+        mountTopBannerHostingView(banner)
+        aiSessionBannerHostingView = banner
+    }
+
+    private func mountOverlayHostingView(_ view: NSView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        if let banner = aiSessionBannerHostingView {
+            addSubview(view, positioned: .above, relativeTo: banner)
+        } else {
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            view.topAnchor.constraint(equalTo: topAnchor),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor),
+            view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+
+    private func mountTopBannerHostingView(_ view: NSView) {
+        view.translatesAutoresizingMaskIntoConstraints = false
+        if let overlay = searchOverlayHostingView {
+            addSubview(view, positioned: .below, relativeTo: overlay)
+        } else {
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            view.topAnchor.constraint(equalTo: topAnchor),
+            view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
     }
 
     func syncKeyStateIndicator(text: String?) {
@@ -8274,6 +8355,9 @@ struct GhosttyTerminalView: NSViewRepresentable {
     var inactiveOverlayColor: NSColor = .clear
     var inactiveOverlayOpacity: Double = 0
     var searchState: TerminalSurface.SearchState? = nil
+    var restoredAISession: AISessionSnapshot? = nil
+    var onResumeAISession: ((AISessionSnapshot) -> Void)? = nil
+    var onDismissAISession: (() -> Void)? = nil
     var reattachToken: UInt64 = 0
     var onFocus: ((UUID) -> Void)? = nil
     var onTriggerFlash: (() -> Void)? = nil
@@ -8431,6 +8515,15 @@ struct GhosttyTerminalView: NSViewRepresentable {
                 visible: showsInactiveOverlay
             )
             hostedView.setNotificationRing(visible: showsUnreadNotificationRing)
+            hostedView.setAISessionResumeBanner(
+                session: restoredAISession,
+                onResume: restoredAISession.flatMap { session in
+                    onResumeAISession.map { handler in
+                        { handler(session) }
+                    }
+                },
+                onDismiss: onDismissAISession
+            )
             hostedView.setSearchOverlay(searchState: searchState)
             hostedView.syncKeyStateIndicator(text: terminalSurface.currentKeyStateIndicatorText)
         }

@@ -52,10 +52,25 @@ struct AISessionSnapshot: Codable, Sendable, Equatable {
             }
             return "claude --resume"
         case .codex:
-            // Codex doesn't have a resume flag — just restart in the same directory
-            return command ?? "codex"
+            // Codex doesn't expose a resumable session ID; restart it in the same directory.
+            return shellCommandPrefixedWithWorkingDirectory(
+                "codex",
+                directory: workingDirectory ?? projectPath
+            )
         }
     }
+}
+
+private func shellCommandPrefixedWithWorkingDirectory(_ command: String, directory: String?) -> String {
+    guard let directory = directory?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !directory.isEmpty else {
+        return command
+    }
+    return "cd \(shellSingleQuoted(directory)) && \(command)"
+}
+
+private func shellSingleQuoted(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
 }
 
 /// Detects AI coding agents running inside terminal sessions.

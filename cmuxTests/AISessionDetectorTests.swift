@@ -76,16 +76,16 @@ final class AISessionDetectorTests: XCTestCase {
         XCTAssertEqual(session.resumeCommand, "claude --resume")
     }
 
-    func testCodexResumeCommandUsesOriginalCommand() {
+    func testCodexResumeCommandUsesWorkingDirectory() {
         let session = AISessionSnapshot(
             agentType: .codex,
             sessionId: nil,
-            workingDirectory: nil,
+            workingDirectory: "/tmp/my project",
             command: "codex --yolo",
             projectPath: nil,
             lastSeenActive: 0
         )
-        XCTAssertEqual(session.resumeCommand, "codex --yolo")
+        XCTAssertEqual(session.resumeCommand, "cd '/tmp/my project' && codex")
     }
 
     func testCodexResumeCommandFallsBackToCodex() {
@@ -98,6 +98,18 @@ final class AISessionDetectorTests: XCTestCase {
             lastSeenActive: 0
         )
         XCTAssertEqual(session.resumeCommand, "codex")
+    }
+
+    func testCodexResumeCommandUsesProjectPathWhenWorkingDirectoryMissing() {
+        let session = AISessionSnapshot(
+            agentType: .codex,
+            sessionId: nil,
+            workingDirectory: nil,
+            command: "codex --continue",
+            projectPath: "/tmp/project's name",
+            lastSeenActive: 0
+        )
+        XCTAssertEqual(session.resumeCommand, "cd '/tmp/project'\\''s name' && codex")
     }
 
     // MARK: - Panel Snapshot Backward Compatibility
