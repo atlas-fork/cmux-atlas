@@ -75995,6 +75995,176 @@
         }
       }
     },
+    "aiQuickLaunch.claude.accessibility": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Claude Code"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code を開く"
+          }
+        }
+      }
+    },
+    "aiQuickLaunch.claude.context.disablePermissive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disable --dangerously-skip-permissions"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "--dangerously-skip-permissions を無効にする"
+          }
+        }
+      }
+    },
+    "aiQuickLaunch.claude.context.enablePermissive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable --dangerously-skip-permissions"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "--dangerously-skip-permissions を有効にする"
+          }
+        }
+      }
+    },
+    "aiQuickLaunch.claude.help.disabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Claude Code"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code を開く"
+          }
+        }
+      }
+    },
+    "aiQuickLaunch.claude.help.enabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Claude Code (--dangerously-skip-permissions enabled)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code を開く (--dangerously-skip-permissions 有効)"
+          }
+        }
+      }
+    },
+    "aiQuickLaunch.codex.accessibility": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Codex"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex を開く"
+          }
+        }
+      }
+    },
+    "aiQuickLaunch.codex.context.disablePermissive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Disable --yolo"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "--yolo を無効にする"
+          }
+        }
+      }
+    },
+    "aiQuickLaunch.codex.context.enablePermissive": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable --yolo"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "--yolo を有効にする"
+          }
+        }
+      }
+    },
+    "aiQuickLaunch.codex.help.disabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Codex"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex を開く"
+          }
+        }
+      }
+    },
+    "aiQuickLaunch.codex.help.enabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Codex (--yolo enabled)"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Codex を開く (--yolo 有効)"
+          }
+        }
+      }
+    },
     "settings.section.sidebarAppearance": {
       "extractionState": "manual",
       "localizations": {

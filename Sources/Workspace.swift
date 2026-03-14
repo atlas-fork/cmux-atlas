@@ -5112,7 +5112,14 @@ final class Workspace: Identifiable, ObservableObject {
             appearance: appearance
         )
         self.bonsplitController = BonsplitController(configuration: config)
-        bonsplitController.extraTabBarLeadingButtons = AnyView(EditorSyncTitlebarButton(config: nil))
+        bonsplitController.extraTabBarLeadingButtons = AnyView(
+            WorkspaceTabBarLeadingButtons(
+                config: nil,
+                launchAgent: { [weak self] agent in
+                    self?.launchQuickAIAgent(agent)
+                }
+            )
+        )
         bonsplitController.contextMenuShortcuts = Self.buildContextMenuShortcuts()
 
         // Remove the default "Welcome" tab that bonsplit creates
@@ -7831,6 +7838,24 @@ final class Workspace: Identifiable, ObservableObject {
     func newTerminalSurfaceInFocusedPane(focus: Bool? = nil) -> TerminalPanel? {
         guard let focusedPaneId = bonsplitController.focusedPaneId else { return nil }
         return newTerminalSurface(inPane: focusedPaneId, focus: focus)
+    }
+
+    func launchQuickAIAgent(_ agent: AIQuickLaunchAgent) {
+        let workingDirectory = focusedPanelId
+            .flatMap { panelDirectories[$0] }
+            ?? currentDirectory
+        let command = AIQuickLaunchController.shared.command(for: agent)
+
+        guard let targetPaneId = bonsplitController.focusedPaneId ?? bonsplitController.allPaneIds.first,
+              let terminalPanel = newTerminalSurface(
+                inPane: targetPaneId,
+                focus: true,
+                workingDirectory: workingDirectory
+              ) else {
+            return
+        }
+
+        terminalPanel.sendText(command + "\r")
     }
 
     @discardableResult
