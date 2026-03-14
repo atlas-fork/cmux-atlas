@@ -1,6 +1,221 @@
 import Foundation
 import SwiftUI
 
+enum AIQuickLaunchAgent {
+    case codex
+    case claudeCode
+}
+
+@MainActor
+final class AIQuickLaunchController: ObservableObject {
+    static let shared = AIQuickLaunchController()
+
+    private static let codexPermissiveKey = "aiQuickLaunch.codexPermissive"
+    private static let claudePermissiveKey = "aiQuickLaunch.claudePermissive"
+
+    @Published var codexPermissiveMode: Bool {
+        didSet {
+            UserDefaults.standard.set(codexPermissiveMode, forKey: Self.codexPermissiveKey)
+        }
+    }
+
+    @Published var claudePermissiveMode: Bool {
+        didSet {
+            UserDefaults.standard.set(claudePermissiveMode, forKey: Self.claudePermissiveKey)
+        }
+    }
+
+    private init() {
+        codexPermissiveMode = UserDefaults.standard.bool(forKey: Self.codexPermissiveKey)
+        claudePermissiveMode = UserDefaults.standard.bool(forKey: Self.claudePermissiveKey)
+    }
+
+    func command(for agent: AIQuickLaunchAgent) -> String {
+        switch agent {
+        case .codex:
+            return codexPermissiveMode ? "codex --yolo" : "codex"
+        case .claudeCode:
+            return claudePermissiveMode ? "claude --dangerously-skip-permissions" : "claude"
+        }
+    }
+
+    func permissiveModeEnabled(for agent: AIQuickLaunchAgent) -> Bool {
+        switch agent {
+        case .codex:
+            return codexPermissiveMode
+        case .claudeCode:
+            return claudePermissiveMode
+        }
+    }
+
+    func togglePermissiveMode(for agent: AIQuickLaunchAgent) {
+        switch agent {
+        case .codex:
+            codexPermissiveMode.toggle()
+        case .claudeCode:
+            claudePermissiveMode.toggle()
+        }
+    }
+}
+
+struct WorkspaceTabBarLeadingButtons: View {
+    let config: TitlebarControlsStyleConfig?
+    let launchAgent: (AIQuickLaunchAgent) -> Void
+
+    private var spacing: CGFloat { config?.spacing ?? 6 }
+
+    var body: some View {
+        HStack(spacing: spacing) {
+            AIQuickLaunchTitlebarButton(
+                agent: .codex,
+                config: config,
+                launch: { launchAgent(.codex) }
+            )
+            AIQuickLaunchTitlebarButton(
+                agent: .claudeCode,
+                config: config,
+                launch: { launchAgent(.claudeCode) }
+            )
+            EditorSyncTitlebarButton(config: config)
+        }
+    }
+}
+
+struct AIQuickLaunchTitlebarButton: View {
+    let agent: AIQuickLaunchAgent
+    let config: TitlebarControlsStyleConfig?
+    let launch: () -> Void
+
+    @ObservedObject private var quickLaunch = AIQuickLaunchController.shared
+
+    private var iconSize: CGFloat { config?.iconSize ?? 12 }
+    private var buttonSize: CGFloat? { config?.buttonSize }
+    private var permissiveEnabled: Bool { quickLaunch.permissiveModeEnabled(for: agent) }
+
+    var body: some View {
+        let button = Button(action: launch) {
+            ZStack {
+                Image(systemName: iconName)
+                    .font(.system(size: iconSize, weight: .semibold))
+                    .foregroundStyle(permissiveEnabled ? AnyShapeStyle(accentColor) : AnyShapeStyle(.primary))
+                    .frame(width: buttonSize, height: buttonSize)
+
+                if permissiveEnabled {
+                    Circle()
+                        .fill(accentColor)
+                        .frame(width: 5, height: 5)
+                        .offset(
+                            x: (buttonSize ?? 20) / 2 - 4,
+                            y: -((buttonSize ?? 20) / 2 - 4)
+                        )
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button(permissiveToggleTitle) {
+                quickLaunch.togglePermissiveMode(for: agent)
+            }
+        }
+        .accessibilityIdentifier(accessibilityIdentifier)
+        .accessibilityLabel(accessibilityLabel)
+        .help(helpText)
+
+        if let buttonSize {
+            button.frame(width: buttonSize, height: buttonSize)
+        } else {
+            button
+        }
+    }
+
+    private var iconName: String {
+        switch agent {
+        case .codex:
+            return "chevron.left.forwardslash.chevron.right"
+        case .claudeCode:
+            return "text.bubble"
+        }
+    }
+
+    private var accentColor: Color {
+        switch agent {
+        case .codex:
+            return .green
+        case .claudeCode:
+            return .orange
+        }
+    }
+
+    private var accessibilityIdentifier: String {
+        switch agent {
+        case .codex:
+            return "titlebarControl.quickLaunch.codex"
+        case .claudeCode:
+            return "titlebarControl.quickLaunch.claude"
+        }
+    }
+
+    private var accessibilityLabel: String {
+        switch agent {
+        case .codex:
+            return String(localized: "aiQuickLaunch.codex.accessibility", defaultValue: "Open Codex")
+        case .claudeCode:
+            return String(localized: "aiQuickLaunch.claude.accessibility", defaultValue: "Open Claude Code")
+        }
+    }
+
+    private var helpText: String {
+        switch agent {
+        case .codex:
+            return permissiveEnabled
+                ? String(
+                    localized: "aiQuickLaunch.codex.help.enabled",
+                    defaultValue: "Open Codex (--yolo enabled)"
+                )
+                : String(
+                    localized: "aiQuickLaunch.codex.help.disabled",
+                    defaultValue: "Open Codex"
+                )
+        case .claudeCode:
+            return permissiveEnabled
+                ? String(
+                    localized: "aiQuickLaunch.claude.help.enabled",
+                    defaultValue: "Open Claude Code (--dangerously-skip-permissions enabled)"
+                )
+                : String(
+                    localized: "aiQuickLaunch.claude.help.disabled",
+                    defaultValue: "Open Claude Code"
+                )
+        }
+    }
+
+    private var permissiveToggleTitle: String {
+        switch agent {
+        case .codex:
+            return permissiveEnabled
+                ? String(
+                    localized: "aiQuickLaunch.codex.context.disablePermissive",
+                    defaultValue: "Disable --yolo"
+                )
+                : String(
+                    localized: "aiQuickLaunch.codex.context.enablePermissive",
+                    defaultValue: "Enable --yolo"
+                )
+        case .claudeCode:
+            return permissiveEnabled
+                ? String(
+                    localized: "aiQuickLaunch.claude.context.disablePermissive",
+                    defaultValue: "Disable --dangerously-skip-permissions"
+                )
+                : String(
+                    localized: "aiQuickLaunch.claude.context.enablePermissive",
+                    defaultValue: "Enable --dangerously-skip-permissions"
+                )
+        }
+    }
+}
+
 /// Tab bar button for editor sync. Left-click toggles sync on/off.
 /// Right-click shows a picker to choose the target editor.
 ///
