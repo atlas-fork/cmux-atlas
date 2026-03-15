@@ -14151,6 +14151,30 @@ final class TerminalOpenURLTargetResolutionTests: XCTestCase {
         }
     }
 
+    func testResolvesBareMarkdownHostPathAsEmbeddedBrowser() throws {
+        let target = try XCTUnwrap(
+            resolveTerminalOpenURLTarget("github.com/org/repo/blob/main/README.md")
+        )
+        switch target {
+        case let .embeddedBrowser(url):
+            XCTAssertEqual(url.scheme, "https")
+            XCTAssertEqual(url.host, "github.com")
+            XCTAssertEqual(url.path, "/org/repo/blob/main/README.md")
+        default:
+            XCTFail("Expected scheme-less markdown URL to route to the embedded browser")
+        }
+    }
+
+    func testResolvesRelativeMarkdownPathAsMarkdownFile() throws {
+        let target = try XCTUnwrap(resolveTerminalOpenURLTarget("./docs/README.md"))
+        switch target {
+        case let .markdownFile(path):
+            XCTAssertEqual(path, "./docs/README.md")
+        default:
+            XCTFail("Expected relative markdown path to open natively")
+        }
+    }
+
     func testResolvesFileSchemeAsExternal() throws {
         let target = try XCTUnwrap(resolveTerminalOpenURLTarget("file:///tmp/cmux.txt"))
         switch target {

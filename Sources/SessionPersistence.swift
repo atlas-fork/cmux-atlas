@@ -123,6 +123,9 @@ enum SessionRestorePolicy {
         if environment["CMUX_DISABLE_SESSION_RESTORE"] == "1" {
             return false
         }
+        if environment["CMUX_FORCE_SESSION_RESTORE"] == "1" {
+            return true
+        }
         if isRunningUnderAutomatedTests(environment: environment) {
             return false
         }
@@ -253,6 +256,8 @@ struct SessionPanelSnapshot: Codable, Sendable {
     var terminal: SessionTerminalPanelSnapshot?
     var browser: SessionBrowserPanelSnapshot?
     var markdown: SessionMarkdownPanelSnapshot?
+    /// AI coding agent session that was active in this terminal at snapshot time.
+    var aiSession: AISessionSnapshot?
 }
 
 enum SessionSplitOrientation: String, Codable, Sendable {

@@ -702,6 +702,18 @@ class TabManager: ObservableObject {
                 if let selectedTabId = self.selectedTabId {
                     self.markFocusedPanelReadIfActive(tabId: selectedTabId)
                 }
+                // Sync external editor to the newly selected workspace's directory
+                if let workspace = self.selectedWorkspace {
+                    EditorSyncController.shared.workspaceDidChange(
+                        directory: workspace.currentDirectory,
+                        activate: false
+                    )
+                    workspace.scheduleAISessionRefreshForTerminalPanels()
+                }
+                // Keep the directory hook up to date for immediate-open
+                EditorSyncController.shared.currentWorkspaceDirectory = { [weak self] in
+                    self?.selectedWorkspace?.currentDirectory
+                }
 #if DEBUG
                 let dtMs = self.debugWorkspaceSwitchStartTime > 0
                     ? (CACurrentMediaTime() - self.debugWorkspaceSwitchStartTime) * 1000

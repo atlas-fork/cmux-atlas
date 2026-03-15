@@ -15,6 +15,12 @@ struct TerminalPanelView: View {
     let hasUnreadNotification: Bool
     let onFocus: () -> Void
     let onTriggerFlash: () -> Void
+    /// AI session that was active at snapshot time, provided during session restore.
+    var restoredAISession: AISessionSnapshot?
+    /// Called when the user wants to resume the detected AI session.
+    var onResumeAISession: ((AISessionSnapshot) -> Void)?
+    /// Called when the user dismisses the AI session resume banner.
+    var onDismissAISession: (() -> Void)?
 
     var body: some View {
         // Layering contract: terminal find UI is mounted in GhosttySurfaceScrollView (AppKit portal layer)
@@ -29,6 +35,9 @@ struct TerminalPanelView: View {
             inactiveOverlayColor: appearance.unfocusedOverlayNSColor,
             inactiveOverlayOpacity: appearance.unfocusedOverlayOpacity,
             searchState: panel.searchState,
+            restoredAISession: restoredAISession,
+            onResumeAISession: onResumeAISession,
+            onDismissAISession: onDismissAISession,
             reattachToken: panel.viewReattachToken,
             onFocus: { _ in onFocus() },
             onTriggerFlash: onTriggerFlash
