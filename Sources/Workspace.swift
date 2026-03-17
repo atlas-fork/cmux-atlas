@@ -150,7 +150,10 @@ extension Workspace {
         )
     }
 
-    func sessionSnapshot(includeScrollback: Bool) -> SessionWorkspaceSnapshot {
+    func sessionSnapshot(
+        includeScrollback: Bool,
+        includeUnsafeTerminalScrollback: Bool = false
+    ) -> SessionWorkspaceSnapshot {
         let tree = bonsplitController.treeSnapshot()
         let layout = sessionLayoutSnapshot(from: tree)
 
@@ -166,7 +169,13 @@ extension Workspace {
 
         let panelSnapshots = allPanelIds
             .prefix(SessionPersistencePolicy.maxPanelsPerWorkspace)
-            .compactMap { sessionPanelSnapshot(panelId: $0, includeScrollback: includeScrollback) }
+            .compactMap {
+                sessionPanelSnapshot(
+                    panelId: $0,
+                    includeScrollback: includeScrollback,
+                    includeUnsafeTerminalScrollback: includeUnsafeTerminalScrollback
+                )
+            }
 
         let statusSnapshots = statusEntries.values
             .sorted { lhs, rhs in lhs.key < rhs.key }
@@ -327,7 +336,11 @@ extension Workspace {
         return decoded.id
     }
 
-    private func sessionPanelSnapshot(panelId: UUID, includeScrollback: Bool) -> SessionPanelSnapshot? {
+    private func sessionPanelSnapshot(
+        panelId: UUID,
+        includeScrollback: Bool,
+        includeUnsafeTerminalScrollback: Bool
+    ) -> SessionPanelSnapshot? {
         guard let panel = panels[panelId] else { return nil }
 
         let panelTitle = panelTitle(panelId: panelId)
@@ -347,7 +360,9 @@ extension Workspace {
         switch panel.panelType {
         case .terminal:
             guard let terminalPanel = panel as? TerminalPanel else { return nil }
-            let shouldPersistScrollback = terminalPanel.shouldPersistScrollbackForSessionSnapshot()
+            let shouldPersistScrollback = terminalPanel.shouldPersistScrollbackForSessionSnapshot(
+                includeUnsafeTerminalScrollback: includeUnsafeTerminalScrollback
+            )
             let capturedScrollback = includeScrollback && shouldPersistScrollback
                 ? TerminalController.shared.readTerminalTextForSnapshot(
                     terminalPanel: terminalPanel,

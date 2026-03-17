@@ -3368,7 +3368,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @discardableResult
-    private func saveSessionSnapshot(includeScrollback: Bool, removeWhenEmpty: Bool = false) -> Bool {
+    private func saveSessionSnapshot(
+        includeScrollback: Bool,
+        includeUnsafeTerminalScrollback: Bool = false,
+        removeWhenEmpty: Bool = false
+    ) -> Bool {
         if Self.shouldSkipSessionSaveDuringStartupRestore(
             isApplyingStartupSessionRestore: isApplyingStartupSessionRestore,
             includeScrollback: includeScrollback
@@ -3389,12 +3393,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             CmuxTypingTiming.logDuration(
                 path: "session.saveSnapshot",
                 startedAt: timingStart,
-                extra: "includeScrollback=\(includeScrollback ? 1 : 0) removeWhenEmpty=\(removeWhenEmpty ? 1 : 0) sync=\(writeSynchronously ? 1 : 0)"
+                extra: "includeScrollback=\(includeScrollback ? 1 : 0) " +
+                    "includeUnsafe=\(includeUnsafeTerminalScrollback ? 1 : 0) " +
+                    "removeWhenEmpty=\(removeWhenEmpty ? 1 : 0) sync=\(writeSynchronously ? 1 : 0)"
             )
         }
 #endif
 
-        guard let snapshot = buildSessionSnapshot(includeScrollback: includeScrollback) else {
+        guard let snapshot = buildSessionSnapshot(
+            includeScrollback: includeScrollback,
+            includeUnsafeTerminalScrollback: includeUnsafeTerminalScrollback
+        ) else {
             persistSessionSnapshot(
                 nil,
                 removeWhenEmpty: removeWhenEmpty,
@@ -3536,7 +3545,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 #if DEBUG
         let saveStart = ProcessInfo.processInfo.systemUptime
 #endif
-        _ = saveSessionSnapshot(includeScrollback: true)
+        _ = saveSessionSnapshot(
+            includeScrollback: true,
+            includeUnsafeTerminalScrollback: true
+        )
 #if DEBUG
         saveMs = (ProcessInfo.processInfo.systemUptime - saveStart) * 1000.0
 #endif
@@ -3628,7 +3640,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func buildSessionSnapshot(includeScrollback: Bool) -> AppSessionSnapshot? {
+    private func buildSessionSnapshot(
+        includeScrollback: Bool,
+        includeUnsafeTerminalScrollback: Bool = false
+    ) -> AppSessionSnapshot? {
         let contexts = mainWindowContexts.values.sorted { lhs, rhs in
             let lhsWindow = lhs.window ?? windowForMainWindowId(lhs.windowId)
             let rhsWindow = rhs.window ?? windowForMainWindowId(rhs.windowId)
@@ -3649,7 +3664,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return SessionWindowSnapshot(
                     frame: window.map { SessionRectSnapshot($0.frame) },
                     display: displaySnapshot(for: window),
-                    tabManager: context.tabManager.sessionSnapshot(includeScrollback: includeScrollback),
+                    tabManager: context.tabManager.sessionSnapshot(
+                        includeScrollback: includeScrollback,
+                        includeUnsafeTerminalScrollback: includeUnsafeTerminalScrollback
+                    ),
                     sidebar: SessionSidebarSnapshot(
                         isVisible: context.sidebarState.isVisible,
                         selection: SessionSidebarSelection(selection: context.sidebarSelectionState.selection),

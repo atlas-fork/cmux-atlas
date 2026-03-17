@@ -4895,12 +4895,20 @@ extension TabManager {
         return hasher.finalize()
     }
 
-    func sessionSnapshot(includeScrollback: Bool) -> SessionTabManagerSnapshot {
+    func sessionSnapshot(
+        includeScrollback: Bool,
+        includeUnsafeTerminalScrollback: Bool = false
+    ) -> SessionTabManagerSnapshot {
         let restorableTabs = tabs
             .filter { !$0.isRemoteWorkspace }
             .prefix(SessionPersistencePolicy.maxWorkspacesPerWindow)
         let workspaceSnapshots = restorableTabs
-            .map { $0.sessionSnapshot(includeScrollback: includeScrollback) }
+            .map {
+                $0.sessionSnapshot(
+                    includeScrollback: includeScrollback,
+                    includeUnsafeTerminalScrollback: includeUnsafeTerminalScrollback
+                )
+            }
         let selectedWorkspaceIndex = selectedTabId.flatMap { selectedTabId in
             restorableTabs.firstIndex(where: { $0.id == selectedTabId })
         }

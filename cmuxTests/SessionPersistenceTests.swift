@@ -764,6 +764,24 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNil(resolved)
     }
 
+    func testTerminalScrollbackPersistenceSkipsUnsafeReplayByDefault() {
+        XCTAssertFalse(
+            TerminalPanel.shouldPersistScrollbackForSessionSnapshot(
+                needsConfirmClose: true,
+                includeUnsafeTerminalScrollback: false
+            )
+        )
+    }
+
+    func testTerminalScrollbackPersistenceAllowsUnsafeReplayForCrashRecovery() {
+        XCTAssertTrue(
+            TerminalPanel.shouldPersistScrollbackForSessionSnapshot(
+                needsConfirmClose: true,
+                includeUnsafeTerminalScrollback: true
+            )
+        )
+    }
+
     private func makeSnapshot(version: Int) -> AppSessionSnapshot {
         let workspace = SessionWorkspaceSnapshot(
             processTitle: "Terminal",
