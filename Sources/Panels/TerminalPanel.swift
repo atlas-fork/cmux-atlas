@@ -182,6 +182,10 @@ final class TerminalPanel: Panel, ObservableObject {
         surface.sendText(text)
     }
 
+    func sendCommand(_ command: String) {
+        surface.sendCommand(command)
+    }
+
     func performBindingAction(_ action: String) -> Bool {
         surface.performBindingAction(action)
     }

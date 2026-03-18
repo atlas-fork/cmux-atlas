@@ -110,7 +110,7 @@ struct WorkspaceContentView: View {
                                 permissiveModeEnabled: permissiveModeEnabled
                               ),
                               let terminalPanel = panel as? TerminalPanel else { return }
-                        terminalPanel.sendText(resumeCommand + "\r")
+                        terminalPanel.sendCommand(resumeCommand)
                         workspace.restoredAISessions.removeValue(forKey: panel.id)
                     },
                     onDismissAISession: {

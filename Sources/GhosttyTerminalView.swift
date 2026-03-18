@@ -3573,6 +3573,12 @@ final class TerminalSurface: Identifiable, ObservableObject {
         writeTextData(data, to: surface)
     }
 
+    func sendCommand(_ command: String) {
+        guard !command.isEmpty else { return }
+        sendText(command)
+        sendText("\r")
+    }
+
     func requestBackgroundSurfaceStartIfNeeded() {
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
