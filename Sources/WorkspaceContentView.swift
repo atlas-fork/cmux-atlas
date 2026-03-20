@@ -16,8 +16,14 @@ struct WorkspaceContentView: View {
         _ notificationPayloadHex: String?
     ) -> Void)?
     @State private var config = WorkspaceContentView.resolveGhosttyAppearanceConfig(reason: "stateInit")
+    @AppStorage(WorkspacePresentationModeSettings.modeKey)
+    private var workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject var notificationStore: TerminalNotificationStore
+
+    private var isMinimalMode: Bool {
+        WorkspacePresentationModeSettings.mode(for: workspacePresentationMode) == .minimal
+    }
 
     static func panelVisibleInUI(
         isWorkspaceVisible: Bool,
@@ -52,7 +58,7 @@ struct WorkspaceContentView: View {
             }
         }()
 
-        BonsplitView(controller: workspace.bonsplitController) { tab, paneId in
+        let bonsplitView = BonsplitView(controller: workspace.bonsplitController) { tab, paneId in
             // Content for each tab in bonsplit
             let _ = Self.debugPanelLookup(tab: tab, workspace: workspace)
             if let panel = workspace.panel(for: tab.id) {
@@ -91,17 +97,24 @@ struct WorkspaceContentView: View {
                         workspace.focusPanel(panel.id)
                     },
                     onTriggerFlash: { workspace.triggerDebugFlash(panelId: panel.id) },
-                    restoredAISession: workspace.restoredAISessions[panel.id],
-                    onResumeAISession: { aiSession in
-                        // Send the resume command to the terminal
-                        if let resumeCmd = aiSession.resumeCommand,
-                           let termPanel = panel as? TerminalPanel {
-                            termPanel.sendText(resumeCmd + "\r")
+                    restoredTerminalAction: workspace.restoredTerminalActions[panel.id],
+                    onRunRestoredTerminalAction: { restoredAction in
+                        let permissiveModeEnabled: Bool
+                        switch restoredAction.agentType {
+                        case .claudeCode:
+                            permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .claudeCode)
+                        case .codex:
+                            permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .codex)
                         }
-                        workspace.restoredAISessions.removeValue(forKey: panel.id)
+                        guard let resumeCommand = restoredAction.resumeCommand(
+                                permissiveModeEnabled: permissiveModeEnabled
+                              ),
+                              let terminalPanel = panel as? TerminalPanel else { return }
+                        terminalPanel.sendCommand(resumeCommand)
+                        workspace.restoredTerminalActions.removeValue(forKey: panel.id)
                     },
-                    onDismissAISession: {
-                        workspace.restoredAISessions.removeValue(forKey: panel.id)
+                    onDismissRestoredTerminalAction: {
+                        workspace.restoredTerminalActions.removeValue(forKey: panel.id)
                     }
                 )
                 .onTapGesture {
@@ -158,6 +171,15 @@ struct WorkspaceContentView: View {
                 backgroundSource: source,
                 notificationPayloadHex: payloadHex
             )
+        }
+
+        Group {
+            if isMinimalMode {
+                bonsplitView
+                    .ignoresSafeArea(.container, edges: .top)
+            } else {
+                bonsplitView
+            }
         }
     }
 

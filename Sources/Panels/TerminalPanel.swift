@@ -88,14 +88,18 @@ final class TerminalPanel: Panel, ObservableObject {
         context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_SPLIT,
         configTemplate: ghostty_surface_config_s? = nil,
         workingDirectory: String? = nil,
-        additionalEnvironment: [String: String] = [:],
-        portOrdinal: Int = 0
+        portOrdinal: Int = 0,
+        initialCommand: String? = nil,
+        initialEnvironmentOverrides: [String: String] = [:],
+        additionalEnvironment: [String: String] = [:]
     ) {
         let surface = TerminalSurface(
             tabId: workspaceId,
             context: context,
             configTemplate: configTemplate,
             workingDirectory: workingDirectory,
+            initialCommand: initialCommand,
+            initialEnvironmentOverrides: initialEnvironmentOverrides,
             additionalEnvironment: additionalEnvironment
         )
         surface.portOrdinal = portOrdinal
@@ -178,6 +182,10 @@ final class TerminalPanel: Panel, ObservableObject {
         surface.sendText(text)
     }
 
+    func sendCommand(_ command: String) {
+        surface.sendCommand(command)
+    }
+
     func performBindingAction(_ action: String) -> Bool {
         surface.performBindingAction(action)
     }
@@ -190,10 +198,22 @@ final class TerminalPanel: Panel, ObservableObject {
         surface.needsConfirmClose()
     }
 
-    func shouldPersistScrollbackForSessionSnapshot() -> Bool {
-        // Session restore only replays terminal output into a fresh shell. If Ghostty
-        // says we are not safely at a prompt, replaying that state later is misleading.
-        !surface.needsConfirmClose()
+    nonisolated static func shouldPersistScrollbackForSessionSnapshot(
+        needsConfirmClose: Bool,
+        includeUnsafeTerminalScrollback: Bool
+    ) -> Bool {
+        // Passive background snapshots stay conservative and only replay when Ghostty
+        // reports the terminal is safely at a prompt. Crash recovery and explicit
+        // app termination can opt into persisting active TUI scrollback so recent
+        // terminal state is not lost across relaunch.
+        includeUnsafeTerminalScrollback || !needsConfirmClose
+    }
+
+    func shouldPersistScrollbackForSessionSnapshot(includeUnsafeTerminalScrollback: Bool) -> Bool {
+        Self.shouldPersistScrollbackForSessionSnapshot(
+            needsConfirmClose: surface.needsConfirmClose(),
+            includeUnsafeTerminalScrollback: includeUnsafeTerminalScrollback
+        )
     }
 
     func triggerFlash() {

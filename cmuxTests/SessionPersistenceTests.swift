@@ -7,6 +7,42 @@ import XCTest
 #endif
 
 final class SessionPersistenceTests: XCTestCase {
+    @MainActor
+    func testWorkspaceSessionSnapshotRestoresMarkdownPanel() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-markdown-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let markdownURL = root.appendingPathComponent("note.md")
+        try "# hello\n".write(to: markdownURL, atomically: true, encoding: .utf8)
+
+        let workspace = Workspace()
+        let paneId = try XCTUnwrap(workspace.bonsplitController.allPaneIds.first)
+        let panel = try XCTUnwrap(
+            workspace.newMarkdownSurface(
+                inPane: paneId,
+                filePath: markdownURL.path,
+                focus: true
+            )
+        )
+        workspace.setCustomTitle("Docs")
+        workspace.setOrganizationName("Atlas")
+        workspace.setPanelCustomTitle(panelId: panel.id, title: "Readme")
+
+        let snapshot = workspace.sessionSnapshot(includeScrollback: false)
+
+        let restored = Workspace()
+        restored.restoreSessionSnapshot(snapshot)
+
+        let restoredPanelId = try XCTUnwrap(restored.focusedPanelId)
+        let restoredPanel = try XCTUnwrap(restored.markdownPanel(for: restoredPanelId))
+        XCTAssertEqual(restoredPanel.filePath, markdownURL.path)
+        XCTAssertEqual(restored.customTitle, "Docs")
+        XCTAssertEqual(restored.organizationName, "Atlas")
+        XCTAssertEqual(restored.panelTitle(panelId: restoredPanelId), "Readme")
+    }
+
     func testSaveAndLoadRoundTripWithCustomSnapshotPath() throws {
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-session-tests-\(UUID().uuidString)", isDirectory: true)
@@ -49,6 +85,47 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertEqual(
             loaded?.windows.first?.tabManager.workspaces.first?.customColor,
             "#C0392B"
+        )
+    }
+
+    func testSaveAndLoadRoundTripPreservesOrganizationName() {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-tests-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        var snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+        snapshot.windows[0].tabManager.workspaces[0].organizationName = "Atlas"
+
+        XCTAssertTrue(SessionPersistenceStore.save(snapshot, fileURL: snapshotURL))
+
+        let loaded = SessionPersistenceStore.load(fileURL: snapshotURL)
+        XCTAssertEqual(
+            loaded?.windows.first?.tabManager.workspaces.first?.organizationName,
+            "Atlas"
+        )
+    }
+
+    func testSaveSkipsRewritingIdenticalSnapshotData() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-session-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotURL = tempDir.appendingPathComponent("session.json", isDirectory: false)
+        let snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+
+        XCTAssertTrue(SessionPersistenceStore.save(snapshot, fileURL: snapshotURL))
+        let firstFileNumber = try fileNumber(for: snapshotURL)
+
+        XCTAssertTrue(SessionPersistenceStore.save(snapshot, fileURL: snapshotURL))
+        let secondFileNumber = try fileNumber(for: snapshotURL)
+
+        XCTAssertEqual(
+            secondFileNumber,
+            firstFileNumber,
+            "Saving identical session data should not replace the snapshot file"
         )
     }
 
@@ -150,8 +227,10 @@ final class SessionPersistenceTests: XCTestCase {
     }
 
     func testSessionBrowserPanelSnapshotHistoryRoundTrip() throws {
+        let profileID = try XCTUnwrap(UUID(uuidString: "8F03A658-5A84-428B-AD03-5A6D04692F64"))
         let source = SessionBrowserPanelSnapshot(
             urlString: "https://example.com/current",
+            profileID: profileID,
             shouldRenderWebView: true,
             pageZoom: 1.2,
             developerToolsVisible: true,
@@ -167,6 +246,7 @@ final class SessionPersistenceTests: XCTestCase {
         let data = try JSONEncoder().encode(source)
         let decoded = try JSONDecoder().decode(SessionBrowserPanelSnapshot.self, from: data)
         XCTAssertEqual(decoded.urlString, source.urlString)
+        XCTAssertEqual(decoded.profileID, source.profileID)
         XCTAssertEqual(decoded.backHistoryURLStrings, source.backHistoryURLStrings)
         XCTAssertEqual(decoded.forwardHistoryURLStrings, source.forwardHistoryURLStrings)
     }
@@ -183,6 +263,7 @@ final class SessionPersistenceTests: XCTestCase {
 
         let decoded = try JSONDecoder().decode(SessionBrowserPanelSnapshot.self, from: json)
         XCTAssertEqual(decoded.urlString, "https://example.com/current")
+        XCTAssertNil(decoded.profileID)
         XCTAssertNil(decoded.backHistoryURLStrings)
         XCTAssertNil(decoded.forwardHistoryURLStrings)
     }
@@ -704,10 +785,303 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNil(resolved)
     }
 
+    func testTerminalScrollbackPersistenceSkipsUnsafeReplayByDefault() {
+        XCTAssertFalse(
+            TerminalPanel.shouldPersistScrollbackForSessionSnapshot(
+                needsConfirmClose: true,
+                includeUnsafeTerminalScrollback: false
+            )
+        )
+    }
+
+    func testTerminalScrollbackPersistenceAllowsUnsafeReplayForCrashRecovery() {
+        XCTAssertTrue(
+            TerminalPanel.shouldPersistScrollbackForSessionSnapshot(
+                needsConfirmClose: true,
+                includeUnsafeTerminalScrollback: true
+            )
+        )
+    }
+
+    func testResolvedSnapshotTerminalTextPrefersRicherLiveRead() {
+        let vtExportText = "Last login: Tue Mar 17 22:28:40 on ttys018\nuser@host ~ % "
+        let liveReadText = """
+        Claude Code
+        > inspecting repository
+        > found 12 files
+        user@host ~ %
+        """
+
+        XCTAssertEqual(
+            TerminalController.resolvedSnapshotTerminalText(
+                vtExportText: vtExportText,
+                liveReadText: liveReadText
+            ),
+            liveReadText
+        )
+    }
+
+    func testResolvedSnapshotTerminalTextPrefersVTExportOnTie() {
+        let vtExportText = "\u{001B}[0mhello\nworld"
+        let liveReadText = "hello\nworld"
+
+        XCTAssertEqual(
+            TerminalController.resolvedSnapshotTerminalText(
+                vtExportText: vtExportText,
+                liveReadText: liveReadText
+            ),
+            vtExportText
+        )
+    }
+
+    func testClaudeHookSessionSnapshotStoreReturnsLatestMatchingSession() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-claude-hook-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let workspaceId = UUID()
+        let panelId = UUID()
+        let stateURL = tempDir.appendingPathComponent("claude-hook-sessions.json", isDirectory: false)
+        let json = """
+        {
+          "version": 1,
+          "sessions": {
+            "older": {
+              "cwd": "/tmp/older",
+              "sessionId": "older-session-id",
+              "startedAt": 100,
+              "surfaceId": "\(panelId.uuidString.lowercased())",
+              "updatedAt": 150,
+              "workspaceId": "\(workspaceId.uuidString.lowercased())"
+            },
+            "newer": {
+              "cwd": "/tmp/newer",
+              "sessionId": "newer-session-id",
+              "startedAt": 100,
+              "surfaceId": "\(panelId.uuidString.uppercased())",
+              "updatedAt": 250,
+              "workspaceId": "\(workspaceId.uuidString.uppercased())"
+            },
+            "other": {
+              "cwd": "/tmp/other",
+              "sessionId": "other-session-id",
+              "startedAt": 100,
+              "surfaceId": "\(UUID().uuidString)",
+              "updatedAt": 500,
+              "workspaceId": "\(workspaceId.uuidString)"
+            }
+          }
+        }
+        """
+        try json.write(to: stateURL, atomically: true, encoding: .utf8)
+
+        let snapshot = ClaudeHookSessionSnapshotStore.restoredTerminalAction(
+            workspaceId: workspaceId,
+            panelId: panelId,
+            processEnv: ["CMUX_CLAUDE_HOOK_STATE_PATH": stateURL.path]
+        )
+
+        XCTAssertEqual(snapshot?.agentType, .claudeCode)
+        XCTAssertEqual(snapshot?.sessionId, "newer-session-id")
+        XCTAssertEqual(snapshot?.workingDirectory, "/tmp/newer")
+        XCTAssertEqual(snapshot?.resumeCommand, "claude --resume newer-session-id")
+        XCTAssertEqual(snapshot?.lastSeenActive, 250)
+    }
+
+    func testCodexHookSessionSnapshotStoreReturnsLatestMatchingSession() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-codex-hook-state-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let workspaceId = UUID()
+        let panelId = UUID()
+        let stateURL = tempDir.appendingPathComponent("codex-hook-sessions.json", isDirectory: false)
+        let json = """
+        {
+          "version": 1,
+          "sessions": {
+            "older": {
+              "cwd": "/tmp/older-codex",
+              "permissionMode": "default",
+              "sessionId": "older-codex-session-id",
+              "source": "startup",
+              "startedAt": 100,
+              "surfaceId": "\(panelId.uuidString.lowercased())",
+              "transcriptPath": "/tmp/older-codex/transcript.jsonl",
+              "updatedAt": 150,
+              "workspaceId": "\(workspaceId.uuidString.lowercased())"
+            },
+            "newer": {
+              "cwd": "/tmp/newer-codex",
+              "permissionMode": "danger-full-access",
+              "sessionId": "newer-codex-session-id",
+              "source": "resume",
+              "startedAt": 100,
+              "surfaceId": "\(panelId.uuidString.uppercased())",
+              "transcriptPath": "/tmp/newer-codex/transcript.jsonl",
+              "updatedAt": 250,
+              "workspaceId": "\(workspaceId.uuidString.uppercased())"
+            },
+            "other": {
+              "cwd": "/tmp/other-codex",
+              "permissionMode": "default",
+              "sessionId": "other-codex-session-id",
+              "source": "startup",
+              "startedAt": 100,
+              "surfaceId": "\(UUID().uuidString)",
+              "transcriptPath": "/tmp/other-codex/transcript.jsonl",
+              "updatedAt": 500,
+              "workspaceId": "\(workspaceId.uuidString)"
+            }
+          }
+        }
+        """
+        try json.write(to: stateURL, atomically: true, encoding: .utf8)
+
+        let snapshot = CodexHookSessionSnapshotStore.restoredTerminalAction(
+            workspaceId: workspaceId,
+            panelId: panelId,
+            processEnv: ["CMUX_CODEX_HOOK_STATE_PATH": stateURL.path]
+        )
+
+        XCTAssertEqual(snapshot?.agentType, .codex)
+        XCTAssertEqual(snapshot?.sessionId, "newer-codex-session-id")
+        XCTAssertEqual(snapshot?.workingDirectory, "/tmp/newer-codex")
+        XCTAssertEqual(snapshot?.projectPath, "/tmp/newer-codex")
+        XCTAssertEqual(snapshot?.resumeCommand, "codex resume newer-codex-session-id")
+        XCTAssertEqual(snapshot?.lastSeenActive, 250)
+    }
+
+    func testRestoredTerminalActionResumeCommandRespectsPermissiveMode() {
+        let claudeSession = RestoredTerminalActionSnapshot(
+            agentType: .claudeCode,
+            sessionId: "claude-session-id",
+            workingDirectory: "/tmp/claude",
+            projectPath: "/tmp/claude",
+            lastSeenActive: 100
+        )
+        XCTAssertEqual(
+            claudeSession.resumeCommand(permissiveModeEnabled: false),
+            "claude --resume claude-session-id"
+        )
+        XCTAssertEqual(
+            claudeSession.resumeCommand(permissiveModeEnabled: true),
+            "claude --dangerously-skip-permissions --resume claude-session-id"
+        )
+
+        let codexSession = RestoredTerminalActionSnapshot(
+            agentType: .codex,
+            sessionId: "123e4567-e89b-12d3-a456-426614174000",
+            workingDirectory: "/tmp/codex",
+            projectPath: "/tmp/codex",
+            lastSeenActive: 200
+        )
+        XCTAssertEqual(
+            codexSession.resumeCommand(permissiveModeEnabled: false),
+            "codex resume 123e4567-e89b-12d3-a456-426614174000"
+        )
+        XCTAssertEqual(
+            codexSession.resumeCommand(permissiveModeEnabled: true),
+            "codex --dangerously-bypass-approvals-and-sandbox resume 123e4567-e89b-12d3-a456-426614174000"
+        )
+    }
+
+    func testSessionPanelSnapshotDecodesLegacyAISessionKey() throws {
+        let panelId = UUID()
+        let json = """
+        {
+          "id": "\(panelId.uuidString)",
+          "type": "terminal",
+          "title": "Terminal",
+          "isPinned": false,
+          "isManuallyUnread": false,
+          "listeningPorts": [],
+          "terminal": {
+            "workingDirectory": "/tmp/project"
+          },
+          "aiSession": {
+            "agentType": "claude_code",
+            "sessionId": "legacy-session-id",
+            "workingDirectory": "/tmp/project",
+            "projectPath": "/tmp/project",
+            "lastSeenActive": 123
+          }
+        }
+        """.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(SessionPanelSnapshot.self, from: json)
+        XCTAssertEqual(decoded.restoredTerminalAction?.agentType, .claudeCode)
+        XCTAssertEqual(decoded.restoredTerminalAction?.sessionId, "legacy-session-id")
+        XCTAssertEqual(decoded.restoredTerminalAction?.projectPath, "/tmp/project")
+    }
+
+    func testWorkspaceOrganizationExportDataRoundTripsThroughEnvelope() throws {
+        let snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+            .windows[0]
+            .tabManager
+            .workspaces[0]
+        let organization = WorkspaceOrganization(name: "Atlas", snapshot: snapshot)
+
+        let data = try WorkspaceOrganizationStore.exportData(for: organization)
+        let imported = try WorkspaceOrganizationStore.importOrganization(from: data)
+
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["version"] as? Int, WorkspaceExportEnvelope.currentVersion)
+        XCTAssertEqual(imported.name, "Atlas")
+        XCTAssertEqual(imported.snapshot.organizationName, snapshot.organizationName)
+        XCTAssertEqual(imported.snapshot.customTitle, snapshot.customTitle)
+    }
+
+    func testWorkspaceOrganizationImportRejectsUnsupportedEnvelopeVersion() throws {
+        let snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+            .windows[0]
+            .tabManager
+            .workspaces[0]
+        let organization = WorkspaceOrganization(name: "Atlas", snapshot: snapshot)
+        var object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(
+                with: WorkspaceOrganizationStore.exportData(for: organization)
+            ) as? [String: Any]
+        )
+        object["version"] = WorkspaceExportEnvelope.currentVersion + 1
+        let mutated = try JSONSerialization.data(withJSONObject: object, options: [])
+
+        XCTAssertThrowsError(try WorkspaceOrganizationStore.importOrganization(from: mutated)) { error in
+            XCTAssertEqual(error as? WorkspaceImportError, .unsupportedFormat)
+        }
+    }
+
+    func testWorkspaceOrganizationImportFromURLRoundTrips() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-org-import-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshot = makeSnapshot(version: SessionSnapshotSchema.currentVersion)
+            .windows[0]
+            .tabManager
+            .workspaces[0]
+        let organization = WorkspaceOrganization(name: "Atlas", snapshot: snapshot)
+        let url = tempDir.appendingPathComponent("atlas.cmuxworkspace")
+
+        try WorkspaceOrganizationStore.writeExportData(
+            WorkspaceOrganizationStore.exportData(for: organization),
+            to: url
+        )
+
+        let imported = try WorkspaceOrganizationStore.importOrganization(from: url)
+        XCTAssertEqual(imported.name, organization.name)
+        XCTAssertEqual(imported.snapshot.organizationName, organization.snapshot.organizationName)
+        XCTAssertEqual(imported.snapshot.currentDirectory, organization.snapshot.currentDirectory)
+    }
+
     private func makeSnapshot(version: Int) -> AppSessionSnapshot {
         let workspace = SessionWorkspaceSnapshot(
             processTitle: "Terminal",
             customTitle: "Restored",
+            organizationName: "Atlas",
             customColor: nil,
             isPinned: true,
             currentDirectory: "/tmp",
@@ -741,6 +1115,11 @@ final class SessionPersistenceTests: XCTestCase {
             createdAt: Date().timeIntervalSince1970,
             windows: [window]
         )
+    }
+
+    private func fileNumber(for fileURL: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        return try XCTUnwrap(attributes[.systemFileNumber] as? Int)
     }
 }
 
@@ -836,6 +1215,40 @@ final class SocketListenerAcceptPolicyTests: XCTestCase {
         )
     }
 
+    func testAcceptFailureRecoveryActionResumesAfterDelayForTransientErrors() {
+        XCTAssertEqual(
+            TerminalController.acceptFailureRecoveryAction(
+                errnoCode: EPROTO,
+                consecutiveFailures: 1
+            ),
+            .resumeAfterDelay(delayMs: 10)
+        )
+        XCTAssertEqual(
+            TerminalController.acceptFailureRecoveryAction(
+                errnoCode: EMFILE,
+                consecutiveFailures: 3
+            ),
+            .resumeAfterDelay(delayMs: 40)
+        )
+    }
+
+    func testAcceptFailureRecoveryActionRearmsForFatalAndPersistentFailures() {
+        XCTAssertEqual(
+            TerminalController.acceptFailureRecoveryAction(
+                errnoCode: EBADF,
+                consecutiveFailures: 1
+            ),
+            .rearmAfterDelay(delayMs: 100)
+        )
+        XCTAssertEqual(
+            TerminalController.acceptFailureRecoveryAction(
+                errnoCode: EPROTO,
+                consecutiveFailures: 50
+            ),
+            .rearmAfterDelay(delayMs: 5_000)
+        )
+    }
+
     func testAcceptFailureBreadcrumbSamplingPrefersEarlyAndPowerOfTwoMilestones() {
         XCTAssertTrue(TerminalController.shouldEmitAcceptFailureBreadcrumb(consecutiveFailures: 1))
         XCTAssertTrue(TerminalController.shouldEmitAcceptFailureBreadcrumb(consecutiveFailures: 2))
@@ -877,6 +1290,34 @@ final class SocketListenerAcceptPolicyTests: XCTestCase {
                 isRunning: false,
                 activeGeneration: 0,
                 listenerStartInProgress: false
+            )
+        )
+    }
+}
+
+final class SidebarDragFailsafePolicyTests: XCTestCase {
+    func testRequestsClearWhenMonitorStartsAfterMouseRelease() {
+        XCTAssertTrue(
+            SidebarDragFailsafePolicy.shouldRequestClearWhenMonitoringStarts(
+                isLeftMouseButtonDown: false
+            )
+        )
+        XCTAssertFalse(
+            SidebarDragFailsafePolicy.shouldRequestClearWhenMonitoringStarts(
+                isLeftMouseButtonDown: true
+            )
+        )
+    }
+
+    func testRequestsClearForLeftMouseUpEventsOnly() {
+        XCTAssertTrue(
+            SidebarDragFailsafePolicy.shouldRequestClear(
+                forMouseEventType: .leftMouseUp
+            )
+        )
+        XCTAssertFalse(
+            SidebarDragFailsafePolicy.shouldRequestClear(
+                forMouseEventType: .leftMouseDragged
             )
         )
     }
