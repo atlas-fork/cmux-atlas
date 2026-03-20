@@ -47,7 +47,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="xcframework-${{ steps.ghostty-sha.outputs.sha }}"
-          if gh release view "$TAG" --repo atlascodesai/ghostty-atlas >/dev/null 2>&1; then
+          if gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Release $TAG already exists, skipping build"
           else
@@ -105,12 +105,12 @@ jobs:
       - name: Upload xcframework release
         if: steps.check-release.outputs.exists == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GHOSTTY_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="xcframework-${{ steps.ghostty-sha.outputs.sha }}"
           gh release create "$TAG" \
-            --repo atlascodesai/ghostty-atlas \
+            --repo ${{ github.repository }} \
             --title "GhosttyKit xcframework (${{ steps.ghostty-sha.outputs.sha }})" \
             --notes "Pre-built GhosttyKit.xcframework for commit ${{ steps.ghostty-sha.outputs.sha }}" \
             GhosttyKit.xcframework.tar.gz

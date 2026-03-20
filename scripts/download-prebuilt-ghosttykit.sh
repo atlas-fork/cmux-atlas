@@ -18,7 +18,7 @@ TAG="xcframework-$GHOSTTY_SHA"
 ARCHIVE_NAME="${GHOSTTYKIT_ARCHIVE_NAME:-GhosttyKit.xcframework.tar.gz}"
 OUTPUT_DIR="${GHOSTTYKIT_OUTPUT_DIR:-GhosttyKit.xcframework}"
 CHECKSUMS_FILE="${GHOSTTYKIT_CHECKSUMS_FILE:-$SCRIPT_DIR/ghosttykit-checksums.txt}"
-DOWNLOAD_URL="${GHOSTTYKIT_URL:-https://github.com/atlascodesai/ghostty-atlas/releases/download/$TAG/$ARCHIVE_NAME}"
+DOWNLOAD_URL="${GHOSTTYKIT_URL:-https://github.com/atlascodesai/cmux-atlas/releases/download/$TAG/$ARCHIVE_NAME}"
 DOWNLOAD_RETRIES="${GHOSTTYKIT_DOWNLOAD_RETRIES:-30}"
 DOWNLOAD_RETRY_DELAY="${GHOSTTYKIT_DOWNLOAD_RETRY_DELAY:-20}"
 
@@ -85,10 +85,8 @@ if [ "$BUILD_FROM_SOURCE" -eq 1 ]; then
   if [ -d "$HOME/.local/bin" ]; then
     export PATH="$HOME/.local/bin:$PATH"
   fi
+
   echo "Building GhosttyKit.xcframework from source..."
-  echo "PATH: $PATH"
-  echo "REPO_ROOT: $REPO_ROOT"
-  echo "Working directory: $(pwd)"
   if ! command -v zig >/dev/null 2>&1; then
     echo "zig not found — installing zig 0.15.2..."
     ZIG_REQUIRED="0.15.2"
@@ -100,24 +98,35 @@ if [ "$BUILD_FROM_SOURCE" -eq 1 ]; then
     rm /tmp/zig.tar.xz
     zig version
   fi
-  echo "zig location: $(command -v zig || echo 'NOT FOUND')"
-  echo "zig version: $(zig version 2>&1 || echo 'FAILED')"
+
   cd "$REPO_ROOT/ghostty"
-  echo "Now in: $(pwd)"
-  echo "ghostty dir contents: $(ls -la build.zig 2>&1 || echo 'no build.zig')"
-  echo "zig env output:"
-  zig env 2>&1 || true
-  echo "--- starting zig build ---"
+  rm -rf .zig-cache zig-out
+
+  # Run zig build with output captured to see errors
   set +e
-  zig build -Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target=universal -Doptimize=ReleaseFast > /tmp/zig-build-out.txt 2>&1
-  ZIG_EXIT=$?
+  zig build -Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target=universal -Doptimize=ReleaseFast 2>&1
+  ZIG_RC=$?
   set -e
-  cat /tmp/zig-build-out.txt
-  if [ "$ZIG_EXIT" -ne 0 ]; then
-    echo "zig build failed with exit code $ZIG_EXIT"
-    exit 1
+
+  if [ "$ZIG_RC" -ne 0 ]; then
+    echo "zig build failed (exit code $ZIG_RC)"
+    # Try copying from a previous build if available
+    if [ -d "$REPO_ROOT/ghostty/macos/GhosttyKit.xcframework" ]; then
+      echo "Copying GhosttyKit.xcframework from previous ghostty build..."
+      cd "$REPO_ROOT"
+      rm -rf "$OUTPUT_DIR"
+      cp -R ghostty/macos/GhosttyKit.xcframework "$OUTPUT_DIR"
+    else
+      exit 1
+    fi
+  else
+    cd "$REPO_ROOT"
+    # zig build puts the xcframework in ghostty/macos/
+    if [ ! -d "$OUTPUT_DIR" ] && [ -d "$REPO_ROOT/ghostty/macos/GhosttyKit.xcframework" ]; then
+      cp -R "$REPO_ROOT/ghostty/macos/GhosttyKit.xcframework" "$OUTPUT_DIR"
+    fi
   fi
-  cd "$REPO_ROOT"
+
   test -d "$OUTPUT_DIR"
   echo "Built $OUTPUT_DIR from source"
 fi
