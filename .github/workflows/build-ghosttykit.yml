@@ -25,11 +25,19 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "Ghostty SHA: $SHA"
 
+      - name: Set up Homebrew PATH
+        run: |
+          if [ -d /opt/homebrew/bin ]; then
+            echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+            export PATH="/opt/homebrew/bin:$PATH"
+          fi
+
       - name: Ensure gh CLI is available
         run: |
+          export PATH="/opt/homebrew/bin:$HOME/.local/bin:$PATH"
           if ! command -v gh >/dev/null 2>&1; then
-            echo "Installing gh CLI..."
-            brew install gh
+            echo "Installing gh CLI via brew..."
+            /opt/homebrew/bin/brew install gh
           fi
           gh --version
 

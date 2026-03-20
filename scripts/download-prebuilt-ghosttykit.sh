@@ -78,11 +78,17 @@ if [ "$BUILD_FROM_SOURCE" -eq 0 ]; then
 fi
 
 if [ "$BUILD_FROM_SOURCE" -eq 1 ]; then
-  # Ensure homebrew tools (msgfmt/gettext) are in PATH for zig subprocesses
+  # Ensure homebrew tools (msgfmt/gettext) and local zig are in PATH
   if [ -d /opt/homebrew/bin ]; then
     export PATH="/opt/homebrew/bin:$PATH"
   fi
+  if [ -d "$HOME/.local/bin" ]; then
+    export PATH="$HOME/.local/bin:$PATH"
+  fi
   echo "Building GhosttyKit.xcframework from source..."
+  echo "PATH: $PATH"
+  echo "REPO_ROOT: $REPO_ROOT"
+  echo "Working directory: $(pwd)"
   if ! command -v zig >/dev/null 2>&1; then
     echo "zig not found — installing zig 0.15.2..."
     ZIG_REQUIRED="0.15.2"
@@ -94,7 +100,11 @@ if [ "$BUILD_FROM_SOURCE" -eq 1 ]; then
     rm /tmp/zig.tar.xz
     zig version
   fi
+  echo "zig location: $(command -v zig || echo 'NOT FOUND')"
+  echo "zig version: $(zig version 2>&1 || echo 'FAILED')"
   cd "$REPO_ROOT/ghostty"
+  echo "Now in: $(pwd)"
+  echo "ghostty dir contents: $(ls -la build.zig 2>&1 || echo 'no build.zig')"
   zig build -Demit-xcframework=true -Demit-macos-app=false -Dxcframework-target=universal -Doptimize=ReleaseFast
   cd "$REPO_ROOT"
   test -d "$OUTPUT_DIR"
