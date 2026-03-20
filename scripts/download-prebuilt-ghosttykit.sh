@@ -80,8 +80,15 @@ fi
 if [ "$BUILD_FROM_SOURCE" -eq 1 ]; then
   echo "Building GhosttyKit.xcframework from source..."
   if ! command -v zig >/dev/null 2>&1; then
-    echo "zig is required to build GhosttyKit from source" >&2
-    exit 1
+    echo "zig not found — installing zig 0.15.2..."
+    ZIG_REQUIRED="0.15.2"
+    ARCH="$(uname -m)"
+    if [ "$ARCH" = "arm64" ]; then ARCH="aarch64"; fi
+    curl -fSL "https://ziglang.org/download/${ZIG_REQUIRED}/zig-${ARCH}-macos-${ZIG_REQUIRED}.tar.xz" -o /tmp/zig.tar.xz
+    tar xf /tmp/zig.tar.xz -C /tmp
+    export PATH="/tmp/zig-${ARCH}-macos-${ZIG_REQUIRED}:$PATH"
+    rm /tmp/zig.tar.xz
+    zig version
   fi
   cd "$REPO_ROOT/ghostty"
   zig build -Demit-xcframework=true -Dxcframework-target=universal -Doptimize=ReleaseFast
