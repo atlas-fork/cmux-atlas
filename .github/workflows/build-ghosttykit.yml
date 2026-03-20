@@ -25,13 +25,21 @@ jobs:
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "Ghostty SHA: $SHA"
 
+      - name: Ensure gh CLI is available
+        run: |
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "Installing gh CLI..."
+            brew install gh
+          fi
+          gh --version
+
       - name: Check if xcframework release already exists
         id: check-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="xcframework-${{ steps.ghostty-sha.outputs.sha }}"
-          if gh release view "$TAG" --repo manaflow-ai/ghostty >/dev/null 2>&1; then
+          if gh release view "$TAG" --repo atlascodesai/ghostty-atlas >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Release $TAG already exists, skipping build"
           else
@@ -94,7 +102,7 @@ jobs:
           set -euo pipefail
           TAG="xcframework-${{ steps.ghostty-sha.outputs.sha }}"
           gh release create "$TAG" \
-            --repo manaflow-ai/ghostty \
+            --repo atlascodesai/ghostty-atlas \
             --title "GhosttyKit xcframework (${{ steps.ghostty-sha.outputs.sha }})" \
             --notes "Pre-built GhosttyKit.xcframework for commit ${{ steps.ghostty-sha.outputs.sha }}" \
             GhosttyKit.xcframework.tar.gz
