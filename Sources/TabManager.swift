@@ -5,6 +5,7 @@ import Bonsplit
 import CoreVideo
 import Combine
 import Darwin
+import UserNotifications
 
 // MARK: - Tab Type Alias for Backwards Compatibility
 // The old Tab class is replaced by Workspace
@@ -225,6 +226,33 @@ enum MemoryUsageDisplaySettings {
     }
 }
 
+enum MemoryPressureKillSettings {
+    static let enabledKey = "memoryPressureKillEnabled"
+    static let thresholdGBKey = "memoryPressureKillThresholdGB"
+    static let defaultEnabled = true
+    static let defaultThresholdGB: Double = 4.0
+    static let minimumThresholdGB: Double = 1.0
+    static let maximumThresholdGB: Double = 64.0
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: enabledKey) == nil {
+            return defaultEnabled
+        }
+        return defaults.bool(forKey: enabledKey)
+    }
+
+    static func thresholdBytes(defaults: UserDefaults = .standard) -> Int64 {
+        let gb: Double
+        if defaults.object(forKey: thresholdGBKey) == nil {
+            gb = defaultThresholdGB
+        } else {
+            gb = defaults.double(forKey: thresholdGBKey)
+        }
+        let clamped = max(minimumThresholdGB, min(maximumThresholdGB, gb))
+        return Int64(clamped * 1024 * 1024 * 1024)
+    }
+}
+
 struct MemoryPanelConsumer: Identifiable, Equatable {
     let panelId: UUID
     let workspaceId: UUID
@@ -243,6 +271,23 @@ struct MemoryProcessSummary: Identifiable, Equatable {
     var id: Int32 { pid }
 }
 
+struct MemoryWorkspaceProcessGroup: Identifiable, Equatable {
+    let workspaceId: UUID?
+    let workspaceTitle: String
+    let processes: [MemoryProcessSummary]
+    let totalBytes: Int64
+
+    var id: String { workspaceId?.uuidString ?? "other" }
+}
+
+enum SystemMemoryPressureLevel: Int, Equatable, Comparable {
+    case normal = 0
+    case warning = 1
+    case critical = 2
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
 struct MemoryUsageSnapshot: Equatable {
     let appResidentBytes: Int64
     let trackedTerminalResidentBytes: Int64
@@ -250,6 +295,12 @@ struct MemoryUsageSnapshot: Equatable {
     let panelResidentBytes: [UUID: Int64]
     let topPanelConsumers: [MemoryPanelConsumer]
     let topSystemProcesses: [MemoryProcessSummary]
+    let processGroups: [MemoryWorkspaceProcessGroup]
+    let systemPressureLevel: SystemMemoryPressureLevel
+    let systemTotalBytes: Int64
+    let systemAvailableBytes: Int64
+    let systemSwapUsedBytes: Int64
+    let systemCompressedBytes: Int64
 
     static let empty = Self(
         appResidentBytes: 0,
@@ -257,7 +308,13 @@ struct MemoryUsageSnapshot: Equatable {
         workspaceResidentBytes: [:],
         panelResidentBytes: [:],
         topPanelConsumers: [],
-        topSystemProcesses: []
+        topSystemProcesses: [],
+        processGroups: [],
+        systemPressureLevel: .normal,
+        systemTotalBytes: 0,
+        systemAvailableBytes: 0,
+        systemSwapUsedBytes: 0,
+        systemCompressedBytes: 0
     )
 
     func bytes(forWorkspace workspaceId: UUID) -> Int64 {
@@ -336,6 +393,7 @@ final class MemoryUsageStore: ObservableObject {
 
     private struct PSRow {
         let pid: Int32
+        let ppid: Int32
         let tty: String?
         let residentBytes: Int64
         let command: String
@@ -372,7 +430,8 @@ final class MemoryUsageStore: ObservableObject {
     private func pollOnce() {
         let context = capturePollContext()
         let rows = loadProcessRows()
-        let nextSnapshot = buildSnapshot(context: context, rows: rows)
+        let systemStats = querySystemMemory()
+        let nextSnapshot = buildSnapshot(context: context, rows: rows, systemStats: systemStats)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard self.snapshot != nextSnapshot else { return }
@@ -420,7 +479,7 @@ final class MemoryUsageStore: ObservableObject {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axo", "pid=,tty=,rss=,comm="]
+        process.arguments = ["-axo", "pid=,ppid=,tty=,rss=,comm="]
         process.standardOutput = pipe
         process.standardError = Pipe()
 
@@ -444,26 +503,89 @@ final class MemoryUsageStore: ObservableObject {
 
     private func parsePSRow(_ line: String) -> PSRow? {
         let components = line.split(
-            maxSplits: 3,
+            maxSplits: 4,
             whereSeparator: { $0.isWhitespace }
         )
-        guard components.count >= 4,
+        guard components.count >= 5,
               let pid = Int32(components[0]),
-              let residentKB = Int64(components[2]) else {
+              let ppid = Int32(components[1]),
+              let residentKB = Int64(components[3]) else {
             return nil
         }
 
-        let tty = normalizedTTY(String(components[1]))
-        let command = String(components[3]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let tty = normalizedTTY(String(components[2]))
+        let command = String(components[4]).trimmingCharacters(in: .whitespacesAndNewlines)
         return PSRow(
             pid: pid,
+            ppid: ppid,
             tty: tty,
             residentBytes: residentKB * 1024,
             command: command
         )
     }
 
-    private func buildSnapshot(context: PollContext, rows: [PSRow]) -> MemoryUsageSnapshot {
+    private struct SystemMemoryStats {
+        let totalBytes: Int64
+        let availableBytes: Int64
+        let swapUsedBytes: Int64
+        let compressedBytes: Int64
+        let pressureLevel: SystemMemoryPressureLevel
+    }
+
+    private func querySystemMemory() -> SystemMemoryStats {
+        let pageSize = Int64(vm_kernel_page_size)
+        let totalBytes = Int64(ProcessInfo.processInfo.physicalMemory)
+
+        var stats = vm_statistics64()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<vm_statistics64>.size / MemoryLayout<integer_t>.size
+        )
+        let result = withUnsafeMutablePointer(to: &stats) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
+            }
+        }
+
+        guard result == KERN_SUCCESS else {
+            return SystemMemoryStats(
+                totalBytes: totalBytes, availableBytes: 0,
+                swapUsedBytes: 0, compressedBytes: 0, pressureLevel: .normal
+            )
+        }
+
+        let freeBytes = Int64(stats.free_count) * pageSize
+        let inactiveBytes = Int64(stats.inactive_count) * pageSize
+        let purgeableBytes = Int64(stats.purgeable_count) * pageSize
+        let compressedBytes = Int64(stats.compressor_page_count) * pageSize
+        let availableBytes = freeBytes + inactiveBytes + purgeableBytes
+
+        var swapUsage = xsw_usage()
+        var swapSize = MemoryLayout<xsw_usage>.size
+        let swapResult = sysctlbyname("vm.swapusage", &swapUsage, &swapSize, nil, 0)
+        let swapUsedBytes = swapResult == 0 ? Int64(swapUsage.xsu_used) : 0
+
+        let availableRatio = Double(availableBytes) / Double(max(totalBytes, 1))
+        let swapRatio = Double(swapUsedBytes) / Double(max(totalBytes, 1))
+
+        let level: SystemMemoryPressureLevel
+        if availableRatio < 0.05 || swapRatio > 0.5 {
+            level = .critical
+        } else if availableRatio < 0.12 || swapRatio > 0.25 {
+            level = .warning
+        } else {
+            level = .normal
+        }
+
+        return SystemMemoryStats(
+            totalBytes: totalBytes,
+            availableBytes: availableBytes,
+            swapUsedBytes: swapUsedBytes,
+            compressedBytes: compressedBytes,
+            pressureLevel: level
+        )
+    }
+
+    private func buildSnapshot(context: PollContext, rows: [PSRow], systemStats: SystemMemoryStats) -> MemoryUsageSnapshot {
         let trackedByTTY = context.trackedPanels.reduce(into: [String: TrackedPanel]()) { partialResult, panel in
             guard let normalizedTTY = normalizedTTY(panel.ttyName) else { return }
             partialResult[normalizedTTY] = panel
@@ -519,13 +641,74 @@ final class MemoryUsageStore: ObservableObject {
                 )
             }
 
+        // Build process tree: map each PID to its workspace by walking the PPID chain.
+        // A process belongs to a workspace if any ancestor's TTY matches a tracked panel.
+        let pidToRow = Dictionary(rows.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+
+        // Map TTY-owning PIDs directly to their workspace
+        var pidToWorkspace: [Int32: (id: UUID, title: String)] = [:]
+        for row in rows {
+            guard let tty = row.tty, let panel = trackedByTTY[tty] else { continue }
+            pidToWorkspace[row.pid] = (panel.workspaceId, panel.workspaceTitle)
+        }
+
+        // For each non-app process, walk PPID chain to find workspace ownership
+        func resolveWorkspace(for pid: Int32) -> (id: UUID, title: String)? {
+            var current = pid
+            var visited: Set<Int32> = []
+            while let row = pidToRow[current] {
+                if let ws = pidToWorkspace[current] { return ws }
+                if !visited.insert(current).inserted { break }
+                if row.ppid == 0 || row.ppid == current { break }
+                current = row.ppid
+            }
+            return nil
+        }
+
+        // Group top processes by workspace
+        var grouped: [UUID?: (title: String, procs: [MemoryProcessSummary])] = [:]
+        let significantProcesses = rows
+            .filter { $0.pid != context.appPID && $0.residentBytes > 1024 * 1024 }
+            .sorted { $0.residentBytes > $1.residentBytes }
+            .prefix(20)
+
+        for row in significantProcesses {
+            let summary = MemoryProcessSummary(
+                pid: row.pid,
+                name: displayProcessName(command: row.command),
+                bytes: row.residentBytes
+            )
+            if let ws = resolveWorkspace(for: row.pid) {
+                grouped[ws.id, default: (ws.title, [])].procs.append(summary)
+            } else {
+                grouped[nil, default: (String(localized: "memory.popover.otherProcesses", defaultValue: "Other"), [])].procs.append(summary)
+            }
+        }
+
+        let processGroups = grouped
+            .map { key, value in
+                MemoryWorkspaceProcessGroup(
+                    workspaceId: key,
+                    workspaceTitle: value.title,
+                    processes: Array(value.procs.prefix(5)),
+                    totalBytes: value.procs.reduce(0) { $0 + $1.bytes }
+                )
+            }
+            .sorted { $0.totalBytes > $1.totalBytes }
+
         return MemoryUsageSnapshot(
             appResidentBytes: appResidentBytes,
             trackedTerminalResidentBytes: panelBytes.values.reduce(0, +),
             workspaceResidentBytes: workspaceBytes,
             panelResidentBytes: panelBytes,
             topPanelConsumers: topPanelConsumers,
-            topSystemProcesses: topSystemProcesses
+            topSystemProcesses: topSystemProcesses,
+            processGroups: processGroups,
+            systemPressureLevel: systemStats.pressureLevel,
+            systemTotalBytes: systemStats.totalBytes,
+            systemAvailableBytes: systemStats.availableBytes,
+            systemSwapUsedBytes: systemStats.swapUsedBytes,
+            systemCompressedBytes: systemStats.compressedBytes
         )
     }
 
@@ -544,6 +727,221 @@ final class MemoryUsageStore: ObservableObject {
             return String(localized: "memory.process.unknown", defaultValue: "Unknown Process")
         }
         return URL(fileURLWithPath: trimmed).lastPathComponent
+    }
+}
+
+// MARK: - System Memory Pressure Monitor
+
+final class SystemMemoryPressureMonitor {
+    static let shared = SystemMemoryPressureMonitor()
+
+    private let actionQueue = DispatchQueue(
+        label: "com.cmuxterm.memoryPressureAction",
+        qos: .userInitiated
+    )
+    private var pressureSource: DispatchSourceMemoryPressure?
+    private var snapshotObserver: AnyCancellable?
+    private var lastHandledLevel: SystemMemoryPressureLevel = .normal
+    private var lastKillTime: TimeInterval = 0
+    private let killCooldown: TimeInterval = 30
+    private var isActive = false
+
+    private init() {
+        setupKernelPressureSource()
+        observeSnapshotPressure()
+    }
+
+    deinit {
+        pressureSource?.cancel()
+        snapshotObserver?.cancel()
+    }
+
+    /// Call after session restore completes to enable defensive actions.
+    func activate() {
+        actionQueue.async { self.isActive = true }
+    }
+
+    // MARK: - Kernel Pressure Source
+
+    private func setupKernelPressureSource() {
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: actionQueue
+        )
+        source.setEventHandler { [weak self] in
+            guard let self, self.isActive else { return }
+            let event = source.data
+            if event.contains(.critical) {
+                self.handlePressureLevel(.critical)
+            } else if event.contains(.warning) {
+                self.handlePressureLevel(.warning)
+            }
+        }
+        self.pressureSource = source
+        source.resume()
+    }
+
+    /// Also react to polled pressure level changes from MemoryUsageStore.
+    private func observeSnapshotPressure() {
+        snapshotObserver = MemoryUsageStore.shared.$snapshot
+            .map(\.systemPressureLevel)
+            .removeDuplicates()
+            .receive(on: actionQueue)
+            .sink { [weak self] level in
+                guard let self, self.isActive, level > .normal else { return }
+                self.handlePressureLevel(level)
+            }
+    }
+
+    // MARK: - Pressure Handling
+
+    private func handlePressureLevel(_ level: SystemMemoryPressureLevel) {
+        // Runs on actionQueue
+        let snapshot = MemoryUsageStore.shared.snapshot
+
+#if DEBUG
+        dlog(
+            "memory.pressure level=\(level) available=\(MemoryUsageFormatter.compactString(for: snapshot.systemAvailableBytes)) " +
+            "swap=\(MemoryUsageFormatter.compactString(for: snapshot.systemSwapUsedBytes)) " +
+            "compressed=\(MemoryUsageFormatter.compactString(for: snapshot.systemCompressedBytes))"
+        )
+#endif
+
+        switch level {
+        case .normal:
+            break
+        case .warning:
+            handleWarning()
+        case .critical:
+            handleCritical(snapshot: snapshot)
+        }
+
+        lastHandledLevel = level
+    }
+
+    private func handleWarning() {
+        DispatchQueue.main.async {
+            AppDelegate.shared?.emergencySessionSave(reason: "memory_pressure_warning")
+        }
+    }
+
+    private func handleCritical(snapshot: MemoryUsageSnapshot) {
+        // 1. Emergency save first
+        DispatchQueue.main.async {
+            AppDelegate.shared?.emergencySessionSave(reason: "memory_pressure_critical")
+        }
+
+        // 2. Check kill cooldown
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - lastKillTime > killCooldown else {
+#if DEBUG
+            dlog("memory.pressure.kill cooldown active, skipping")
+#endif
+            return
+        }
+
+        // 3. Find and kill heaviest workspace
+        guard let target = findKillTarget(snapshot: snapshot) else {
+#if DEBUG
+            dlog("memory.pressure.kill no target exceeds thresholds")
+#endif
+            return
+        }
+
+        lastKillTime = now
+        killAndCloseWorkspace(target)
+    }
+
+    // MARK: - Kill Logic
+
+    private struct KillTarget {
+        let workspaceId: UUID
+        let workspaceTitle: String
+        let totalBytes: Int64
+        let heaviestPID: Int32
+        let heaviestProcessName: String
+        let heaviestProcessBytes: Int64
+    }
+
+    private func findKillTarget(snapshot: MemoryUsageSnapshot) -> KillTarget? {
+        guard MemoryPressureKillSettings.isEnabled() else {
+            return nil
+        }
+
+        let trackedTotal = snapshot.trackedTerminalResidentBytes
+        let threshold50Pct = trackedTotal / 2
+        let absoluteThreshold = MemoryPressureKillSettings.thresholdBytes()
+
+        guard let heaviestGroup = snapshot.processGroups
+            .filter({ $0.workspaceId != nil })
+            .max(by: { $0.totalBytes < $1.totalBytes }),
+            let wsId = heaviestGroup.workspaceId else {
+            return nil
+        }
+
+        guard heaviestGroup.totalBytes > threshold50Pct || heaviestGroup.totalBytes > absoluteThreshold else {
+            return nil
+        }
+
+        guard let heaviestProc = heaviestGroup.processes.max(by: { $0.bytes < $1.bytes }) else {
+            return nil
+        }
+
+        return KillTarget(
+            workspaceId: wsId,
+            workspaceTitle: heaviestGroup.workspaceTitle,
+            totalBytes: heaviestGroup.totalBytes,
+            heaviestPID: heaviestProc.pid,
+            heaviestProcessName: heaviestProc.name,
+            heaviestProcessBytes: heaviestProc.bytes
+        )
+    }
+
+    private func killAndCloseWorkspace(_ target: KillTarget) {
+#if DEBUG
+        dlog(
+            "memory.pressure.kill workspace=\"\(target.workspaceTitle)\" pid=\(target.heaviestPID) " +
+            "process=\(target.heaviestProcessName) bytes=\(MemoryUsageFormatter.compactString(for: target.heaviestProcessBytes))"
+        )
+#endif
+
+        // SIGKILL the heaviest process
+        Darwin.kill(target.heaviestPID, SIGKILL)
+
+        // Close workspace on main thread
+        DispatchQueue.main.async {
+            guard let appDelegate = AppDelegate.shared else { return }
+            for tabManager in appDelegate.allTabManagers() {
+                if let workspace = tabManager.tabs.first(where: { $0.id == target.workspaceId }) {
+                    tabManager.closeWorkspace(workspace)
+                    break
+                }
+            }
+        }
+
+        // Post macOS user notification
+        postKillNotification(target: target)
+    }
+
+    private func postKillNotification(target: KillTarget) {
+        let content = UNMutableNotificationContent()
+        content.title = String(
+            localized: "memory.pressure.kill.notification.title",
+            defaultValue: "Memory Pressure: Workspace Closed"
+        )
+        let memString = MemoryUsageFormatter.compactString(for: target.heaviestProcessBytes)
+        content.body = String(
+            localized: "memory.pressure.kill.notification.body",
+            defaultValue: "Workspace \"\(target.workspaceTitle)\" was closed to prevent a system crash. Process \(target.heaviestProcessName) was using \(memString)."
+        )
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "cmux.memory.pressure.kill.\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 }
 
@@ -998,6 +1396,32 @@ fileprivate func cmuxVsyncIOSurfaceTimelineCallback(
 }
 #endif
 
+enum CloseConfirmationRuntimeState {
+    private static let lock = NSLock()
+    private static var titleStack: [String] = []
+
+    static func begin(title: String) {
+        lock.lock()
+        titleStack.append(title)
+        lock.unlock()
+    }
+
+    static func end() {
+        lock.lock()
+        if !titleStack.isEmpty {
+            _ = titleStack.removeLast()
+        }
+        lock.unlock()
+    }
+
+    static func snapshot() -> (isPresented: Bool, title: String?) {
+        lock.lock()
+        let title = titleStack.last
+        lock.unlock()
+        return (title != nil, title)
+    }
+}
+
 @MainActor
 class TabManager: ObservableObject {
     private enum WorkspacePullRequestSnapshot: Equatable {
@@ -1159,6 +1583,9 @@ class TabManager: ObservableObject {
     private var pendingWorkspaceUnfocusTarget: (tabId: UUID, panelId: UUID)?
     private var sidebarSelectedWorkspaceIds: Set<UUID> = []
     var confirmCloseHandler: ((String, String, Bool) -> Bool)?
+#if DEBUG
+    var debugConfirmCloseResponseOverride: Bool?
+#endif
     private struct WorkspaceCreationSnapshot {
         let tabs: [Workspace]
         let selectedTabId: UUID?
@@ -1492,6 +1919,51 @@ class TabManager: ObservableObject {
             }
         }
         return newWorkspace
+    }
+
+    @discardableResult
+    func addWorkspaceFromSnapshot(_ snapshot: SessionWorkspaceSnapshot, organizationName: String? = nil, select: Bool = true) -> Workspace {
+        let ordinal = Self.nextPortOrdinal
+        Self.nextPortOrdinal += 1
+        let workspace = Workspace(
+            title: snapshot.customTitle ?? snapshot.processTitle,
+            workingDirectory: snapshot.currentDirectory,
+            portOrdinal: ordinal
+        )
+        workspace.owningTabManager = self
+        workspace.restoreSessionSnapshot(snapshot)
+        workspace.setOrganizationName(organizationName ?? snapshot.organizationName)
+        wireClosedBrowserTracking(for: workspace)
+
+        let currentSnapshot = workspaceCreationSnapshot()
+        let insertIndex = newTabInsertIndex(snapshot: currentSnapshot, placementOverride: nil)
+        var updatedTabs = currentSnapshot.tabs
+        if insertIndex >= 0 && insertIndex <= updatedTabs.count {
+            updatedTabs.insert(workspace, at: insertIndex)
+        } else {
+            updatedTabs.append(workspace)
+        }
+        tabs = updatedTabs
+
+        if select {
+            selectedTabId = workspace.id
+            NotificationCenter.default.post(
+                name: .ghosttyDidFocusTab,
+                object: nil,
+                userInfo: [GhosttyNotificationKey.tabId: workspace.id]
+            )
+        }
+
+        let dir = snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !dir.isEmpty, let terminalPanel = workspace.focusedTerminalPanel {
+            scheduleInitialWorkspaceGitMetadataRefresh(
+                workspaceId: workspace.id,
+                panelId: terminalPanel.id,
+                directory: dir
+            )
+        }
+
+        return workspace
     }
 
     @MainActor
@@ -2451,6 +2923,7 @@ class TabManager: ObservableObject {
 
     func closeWorkspace(_ workspace: Workspace) {
         guard tabs.count > 1 else { return }
+        autoSaveOrganization(workspace)
         sentryBreadcrumb("workspace.close", data: ["tabCount": tabs.count - 1])
         clearWorkspaceGitProbes(workspaceId: workspace.id)
         sidebarSelectedWorkspaceIds.remove(workspace.id)
@@ -2609,13 +3082,43 @@ class TabManager: ObservableObject {
 #if DEBUG
         debugPrimeWorkspaceSwitchTrigger("select", to: workspace.id)
 #endif
+        // Auto-save the workspace we're switching away from
+        if let previous = tabs.first(where: { $0.id == selectedTabId }), previous.id != workspace.id {
+            autoSaveOrganization(previous)
+        }
         selectedTabId = workspace.id
     }
 
     // Keep selectTab as convenience alias
     func selectTab(_ tab: Workspace) { selectWorkspace(tab) }
 
+    // MARK: - Organization Auto-Save
+
+    private func autoSaveOrganization(_ workspace: Workspace) {
+        let name = workspace.organizationName
+            ?? (workspace.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? String(localized: "workspace.displayName.fallback", defaultValue: "Workspace")
+                : workspace.title)
+        let snapshot = workspace.sessionSnapshot(includeScrollback: false)
+        let existing = WorkspaceOrganizationStore.loadAll()
+        if existing.count >= WorkspaceOrganizationStore.maxOrganizations,
+           existing.first(where: {
+               $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame &&
+               $0.snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines) ==
+                   snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+           }) == nil,
+           let oldest = existing.last {
+            WorkspaceOrganizationStore.remove(oldest.id)
+        }
+        _ = WorkspaceOrganizationStore.upsertAutomaticSnapshot(name: name, snapshot: snapshot)
+    }
+
     private func confirmClose(title: String, message: String, acceptCmdD: Bool) -> Bool {
+#if DEBUG
+        if let debugConfirmCloseResponseOverride {
+            return debugConfirmCloseResponseOverride
+        }
+#endif
         if let confirmCloseHandler {
             return confirmCloseHandler(title, message, acceptCmdD)
         }
@@ -2642,6 +3145,8 @@ class TabManager: ObservableObject {
             NSApp.activate(ignoringOtherApps: true)
         }
 
+        CloseConfirmationRuntimeState.begin(title: title)
+        defer { CloseConfirmationRuntimeState.end() }
         return alert.runModal() == .alertFirstButtonReturn
     }
 
@@ -2992,9 +3497,10 @@ class TabManager: ObservableObject {
             tab.focusPanel(restoredPanelId)
         }
 
-        // Focus the panel
+        // Focus the panel via Workspace.focusPanel so browser tabs reuse the same
+        // activation path that restores blank-tab omnibar focus.
         guard let panelId = tab.focusedPanelId,
-              let panel = tab.panels[panelId] else { return }
+              tab.panels[panelId] != nil else { return }
 
         // Defer unfocusing the previous workspace's panel until ContentView confirms handoff
         // completion (new workspace has focus or timeout fallback), to avoid a visible freeze gap.
@@ -3007,12 +3513,7 @@ class TabManager: ObservableObject {
             )
         }
 
-        panel.focus()
-
-        // For terminal panels, ensure proper focus handling
-        if let terminalPanel = panel as? TerminalPanel {
-            terminalPanel.hostedView.ensureFocus(for: selectedTabId, surfaceId: panelId)
-        }
+        tab.focusPanel(panelId)
     }
 
     func completePendingWorkspaceUnfocus(reason: String) {
@@ -5399,6 +5900,7 @@ extension Notification.Name {
     static let commandPaletteRenameInputDeleteBackwardRequested = Notification.Name("cmux.commandPaletteRenameInputDeleteBackwardRequested")
     static let feedbackComposerRequested = Notification.Name("cmux.feedbackComposerRequested")
     static let ghosttyDidSetTitle = Notification.Name("ghosttyDidSetTitle")
+    static let workspaceDidUpdatePresentationMetadata = Notification.Name("cmux.workspaceDidUpdatePresentationMetadata")
     static let ghosttyDidFocusTab = Notification.Name("ghosttyDidFocusTab")
     static let ghosttyDidFocusSurface = Notification.Name("ghosttyDidFocusSurface")
     static let ghosttyDidBecomeFirstResponderSurface = Notification.Name("ghosttyDidBecomeFirstResponderSurface")

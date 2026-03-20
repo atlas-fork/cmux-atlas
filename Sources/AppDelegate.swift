@@ -2899,6 +2899,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         startupSessionSnapshot = nil
         isApplyingStartupSessionRestore = false
         _ = saveSessionSnapshot(includeScrollback: false)
+        SystemMemoryPressureMonitor.shared.activate()
     }
 
     private func applySessionWindowSnapshot(
@@ -3377,6 +3378,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         return hasher.finalize()
+    }
+
+    /// Trigger an immediate session save from external callers (e.g. memory pressure monitor).
+    /// Must be called on the main thread.
+    func emergencySessionSave(reason: String) {
+#if DEBUG
+        dlog("session.emergencySave reason=\(reason)")
+#endif
+        _ = saveSessionSnapshot(
+            includeScrollback: true,
+            includeUnsafeTerminalScrollback: true
+        )
     }
 
     @discardableResult

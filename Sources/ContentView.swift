@@ -1395,6 +1395,7 @@ struct ContentView: View {
     @State private var mountedWorkspaceIds: [UUID] = []
     @State private var lastSidebarSelectionIndex: Int? = nil
     @State private var titlebarText: String = ""
+    @State private var titlebarOrgName: String?
     @State private var isFullScreen: Bool = false
     @State private var observedWindow: NSWindow?
     @StateObject private var fullscreenControlsViewModel = TitlebarControlsViewModel()
@@ -2171,10 +2172,7 @@ struct ContentView: View {
                     DraggableFolderIcon(directory: directory)
                 }
 
-                Text(titlebarText)
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(fakeTitlebarTextColor)
-                    .lineLimit(1)
+                titlebarBreadcrumb
                     .allowsHitTesting(false)
 
                 Spacer()
@@ -2212,11 +2210,42 @@ struct ContentView: View {
             if !titlebarText.isEmpty {
                 titlebarText = ""
             }
+            if titlebarOrgName != nil {
+                titlebarOrgName = nil
+            }
             return
         }
         let title = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
         if titlebarText != title {
             titlebarText = title
+        }
+        let orgName = tab.organizationName
+        if titlebarOrgName != orgName {
+            titlebarOrgName = orgName
+        }
+    }
+
+    @ViewBuilder
+    private var titlebarBreadcrumb: some View {
+        if let orgName = titlebarOrgName, !orgName.isEmpty {
+            HStack(spacing: 4) {
+                Text(orgName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(fakeTitlebarTextColor.opacity(0.6))
+                    .lineLimit(1)
+                Text("/")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(fakeTitlebarTextColor.opacity(0.35))
+                Text(titlebarText)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(fakeTitlebarTextColor)
+                    .lineLimit(1)
+            }
+        } else {
+            Text(titlebarText)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(fakeTitlebarTextColor)
+                .lineLimit(1)
         }
     }
 
@@ -2472,6 +2501,12 @@ struct ContentView: View {
                   tabId == tabManager.selectedTabId else { return }
             completeWorkspaceHandoffIfNeeded(focusedTabId: tabId, reason: "focus")
             attemptCommandPaletteFocusRestoreIfNeeded()
+            scheduleTitlebarTextRefresh()
+        })
+
+        view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .workspaceDidUpdatePresentationMetadata)) { notification in
+            guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID,
+                  tabId == tabManager.selectedTabId else { return }
             scheduleTitlebarTextRefresh()
         })
 
@@ -4474,6 +4509,7 @@ struct ContentView: View {
                     detail: .workspace
                 )
                 let workspaceId = workspace.id
+                let workspaceFocusedPanelId = workspace.focusedPanelId
                 entries.append(
                     CommandPaletteCommand(
                         id: workspaceCommandId,
@@ -4488,7 +4524,8 @@ struct ContentView: View {
                             focusCommandPaletteSwitcherTarget(
                                 windowId: windowId,
                                 tabManager: windowTabManager,
-                                workspaceId: workspaceId
+                                workspaceId: workspaceId,
+                                panelId: workspaceFocusedPanelId
                             )
                         }
                     )
@@ -4638,14 +4675,15 @@ struct ContentView: View {
     private func focusCommandPaletteSwitcherTarget(
         windowId: UUID,
         tabManager: TabManager,
-        workspaceId: UUID
+        workspaceId: UUID,
+        panelId: UUID?
     ) {
         // Switcher commands dismiss the palette after action dispatch.
         // Defer focus mutation one turn so browser omnibar autofocus can run
         // without being blocked by the palette-visibility guard.
         DispatchQueue.main.async {
             _ = AppDelegate.shared?.focusMainWindow(windowId: windowId)
-            tabManager.focusTab(workspaceId, suppressFlash: true)
+            tabManager.focusTab(workspaceId, surfaceId: panelId, suppressFlash: true)
         }
     }
 
@@ -9244,6 +9282,28 @@ private struct SidebarMemoryUsageButton: View {
         return String(localized: "memory.footer.appFallback", defaultValue: "cmux")
     }
 
+    private var pressureColor: Color {
+        switch memoryUsageStore.snapshot.systemPressureLevel {
+        case .normal:
+            return Color(nsColor: .secondaryLabelColor)
+        case .warning:
+            return Color.orange
+        case .critical:
+            return Color.red
+        }
+    }
+
+    private var pressureTooltip: String {
+        switch memoryUsageStore.snapshot.systemPressureLevel {
+        case .normal:
+            return String(localized: "memory.footer.tooltip", defaultValue: "Inspect app and terminal memory usage")
+        case .warning:
+            return String(localized: "memory.footer.pressure.warning", defaultValue: "System memory pressure elevated — session auto-saved")
+        case .critical:
+            return String(localized: "memory.footer.pressure.critical", defaultValue: "System memory critical — heavy workspaces may be closed to prevent crash")
+        }
+    }
+
     private var footerValueText: String {
         let bytes = memoryUsageStore.snapshot.appResidentBytes
         guard bytes > 0 else {
@@ -9265,7 +9325,7 @@ private struct SidebarMemoryUsageButton: View {
                     .monospacedDigit()
                     .lineLimit(1)
             }
-            .foregroundStyle(Color(nsColor: .secondaryLabelColor))
+            .foregroundStyle(pressureColor)
             .padding(.horizontal, 8)
             .frame(height: 22)
         }
@@ -9277,7 +9337,7 @@ private struct SidebarMemoryUsageButton: View {
         ) {
             popover
         })
-        .safeHelp(String(localized: "memory.footer.tooltip", defaultValue: "Inspect app and terminal memory usage"))
+        .safeHelp(pressureTooltip)
         .accessibilityLabel(String(localized: "memory.footer.accessibilityLabel", defaultValue: "Memory Usage"))
         .accessibilityIdentifier("SidebarMemoryUsageButton")
     }
@@ -9317,15 +9377,72 @@ private struct SidebarMemoryUsageButton: View {
                 }
             }
 
+            if memoryUsageStore.snapshot.processGroups.isEmpty {
+                SidebarMemoryUsagePopoverSection(
+                    title: String(localized: "memory.popover.systemSection", defaultValue: "Top Processes")
+                ) {
+                    ForEach(memoryUsageStore.snapshot.topSystemProcesses) { process in
+                        SidebarMemoryUsagePopoverRow(
+                            title: process.name,
+                            subtitle: String(localized: "memory.popover.pidPrefix", defaultValue: "PID") + " \(process.pid)",
+                            value: MemoryUsageFormatter.detailedString(for: process.bytes)
+                        )
+                    }
+                }
+            } else {
+                ForEach(memoryUsageStore.snapshot.processGroups) { group in
+                    SidebarMemoryUsagePopoverSection(
+                        title: group.workspaceTitle + " — " + MemoryUsageFormatter.detailedString(for: group.totalBytes)
+                    ) {
+                        ForEach(group.processes) { process in
+                            SidebarMemoryUsagePopoverRow(
+                                title: process.name,
+                                subtitle: String(localized: "memory.popover.pidPrefix", defaultValue: "PID") + " \(process.pid)",
+                                value: MemoryUsageFormatter.detailedString(for: process.bytes)
+                            )
+                        }
+                    }
+                }
+            }
+
             SidebarMemoryUsagePopoverSection(
-                title: String(localized: "memory.popover.systemSection", defaultValue: "Top Processes")
+                title: String(localized: "memory.popover.systemHealth", defaultValue: "System Health")
             ) {
-                ForEach(memoryUsageStore.snapshot.topSystemProcesses) { process in
+                SidebarMemoryUsagePopoverRow(
+                    title: String(localized: "memory.popover.systemTotal", defaultValue: "Physical RAM"),
+                    subtitle: nil,
+                    value: MemoryUsageFormatter.detailedString(for: memoryUsageStore.snapshot.systemTotalBytes)
+                )
+                SidebarMemoryUsagePopoverRow(
+                    title: String(localized: "memory.popover.systemAvailable", defaultValue: "Available"),
+                    subtitle: nil,
+                    value: MemoryUsageFormatter.detailedString(for: memoryUsageStore.snapshot.systemAvailableBytes)
+                )
+                if memoryUsageStore.snapshot.systemSwapUsedBytes > 0 {
                     SidebarMemoryUsagePopoverRow(
-                        title: process.name,
-                        subtitle: String(localized: "memory.popover.pidPrefix", defaultValue: "PID") + " \(process.pid)",
-                        value: MemoryUsageFormatter.detailedString(for: process.bytes)
+                        title: String(localized: "memory.popover.systemSwap", defaultValue: "Swap Used"),
+                        subtitle: nil,
+                        value: MemoryUsageFormatter.detailedString(for: memoryUsageStore.snapshot.systemSwapUsedBytes)
                     )
+                }
+                if memoryUsageStore.snapshot.systemCompressedBytes > 0 {
+                    SidebarMemoryUsagePopoverRow(
+                        title: String(localized: "memory.popover.systemCompressed", defaultValue: "Compressed"),
+                        subtitle: nil,
+                        value: MemoryUsageFormatter.detailedString(for: memoryUsageStore.snapshot.systemCompressedBytes)
+                    )
+                }
+                if memoryUsageStore.snapshot.systemPressureLevel > .normal {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(memoryUsageStore.snapshot.systemPressureLevel == .critical ? Color.red : Color.orange)
+                            .frame(width: 6, height: 6)
+                        Text(memoryUsageStore.snapshot.systemPressureLevel == .critical
+                             ? String(localized: "memory.popover.pressureCritical", defaultValue: "Memory Pressure: Critical")
+                             : String(localized: "memory.popover.pressureWarning", defaultValue: "Memory Pressure: Warning"))
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(memoryUsageStore.snapshot.systemPressureLevel == .critical ? Color.red : Color.orange)
+                    }
                 }
             }
         }
@@ -11570,6 +11687,53 @@ private struct TabItemView: View, Equatable {
             }
         }
         .disabled(tab.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        Divider()
+
+        let favName = tab.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? String(localized: "workspace.displayName.fallback", defaultValue: "Workspace")
+            : tab.title
+
+        Button(String(localized: "contextMenu.nameOrganization", defaultValue: "Name Organization…")) {
+            let alert = NSAlert()
+            alert.messageText = String(localized: "organization.name.title", defaultValue: "Name Organization")
+            alert.informativeText = String(localized: "organization.name.message", defaultValue: "Enter a name for this workspace's organization.")
+            alert.addButton(withTitle: String(localized: "organization.name.save", defaultValue: "Save"))
+            alert.addButton(withTitle: String(localized: "organization.name.cancel", defaultValue: "Cancel"))
+            let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+            input.stringValue = tab.organizationName ?? favName
+            alert.accessoryView = input
+            alert.window.initialFirstResponder = input
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !newName.isEmpty else { return }
+            tab.setOrganizationName(newName)
+        }
+
+        Button(String(localized: "contextMenu.saveAsOrganization", defaultValue: "Save as Organization")) {
+            let orgName = tab.organizationName ?? favName
+            let snapshot = tab.sessionSnapshot(includeScrollback: false)
+            let org = WorkspaceOrganization(name: orgName, snapshot: snapshot)
+            let orgs = WorkspaceOrganizationStore.loadAll()
+            if orgs.count >= WorkspaceOrganizationStore.maxOrganizations {
+                if let oldest = orgs.last {
+                    WorkspaceOrganizationStore.remove(oldest.id)
+                }
+            }
+            WorkspaceOrganizationStore.save(org)
+        }
+
+        Button(String(localized: "contextMenu.exportOrganization", defaultValue: "Export Organization…")) {
+            let orgName = tab.organizationName ?? favName
+            let snapshot = tab.sessionSnapshot(includeScrollback: true)
+            WorkspaceOrganizationStore.exportWorkspace(snapshot, name: orgName)
+        }
+
+        Button(String(localized: "contextMenu.importOrganization", defaultValue: "Import Organization…")) {
+            if let org = WorkspaceOrganizationStore.importWorkspace() {
+                tabManager.addWorkspaceFromSnapshot(org.snapshot, organizationName: org.name)
+            }
+        }
 
         Divider()
 

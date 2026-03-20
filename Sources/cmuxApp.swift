@@ -596,6 +596,58 @@ struct cmuxApp: App {
                         }
                     }
                 }
+
+                Divider()
+
+                Menu(String(localized: "menu.file.organizations", defaultValue: "Organizations")) {
+                    let orgs = WorkspaceOrganizationStore.loadAll()
+
+                    if !orgs.isEmpty {
+                        let recentOrgs = Array(orgs.prefix(5))
+                        ForEach(Array(recentOrgs.enumerated()), id: \.element.id) { index, org in
+                            Button(org.name) {
+                                WorkspaceOrganizationStore.touchLastUsed(org.id)
+                                activeTabManager.addWorkspaceFromSnapshot(org.snapshot, organizationName: org.name)
+                            }
+                            .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.control])
+                        }
+
+                        if orgs.count > 5 {
+                            Menu(String(localized: "menu.file.organizations.more", defaultValue: "More…")) {
+                                ForEach(orgs.dropFirst(5), id: \.id) { org in
+                                    Button(org.name) {
+                                        WorkspaceOrganizationStore.touchLastUsed(org.id)
+                                        activeTabManager.addWorkspaceFromSnapshot(org.snapshot, organizationName: org.name)
+                                    }
+                                }
+                            }
+                        }
+
+                        Divider()
+
+                        Menu(String(localized: "menu.file.organizations.remove", defaultValue: "Remove…")) {
+                            ForEach(orgs, id: \.id) { org in
+                                Button(String.localizedStringWithFormat(
+                                    String(localized: "menu.file.organizations.remove.named", defaultValue: "Remove \"%@\""),
+                                    org.name
+                                )) {
+                                    WorkspaceOrganizationStore.remove(org.id)
+                                }
+                            }
+                        }
+                    } else {
+                        Text(String(localized: "menu.file.organizations.empty", defaultValue: "No saved organizations"))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Divider()
+
+                    Button(String(localized: "menu.file.organizations.import", defaultValue: "Import Organization…")) {
+                        if let org = WorkspaceOrganizationStore.importWorkspace() {
+                            activeTabManager.addWorkspaceFromSnapshot(org.snapshot, organizationName: org.name)
+                        }
+                    }
+                }
             }
 
             // Close tab/workspace
@@ -3834,6 +3886,10 @@ struct SettingsView: View {
     private var memoryUsageShowInPaneTabs = MemoryUsageDisplaySettings.defaultShowInPaneTabs
     @AppStorage(MemoryUsageDisplaySettings.showInFooterKey)
     private var memoryUsageShowInFooter = MemoryUsageDisplaySettings.defaultShowInFooter
+    @AppStorage(MemoryPressureKillSettings.enabledKey)
+    private var memoryPressureKillEnabled = MemoryPressureKillSettings.defaultEnabled
+    @AppStorage(MemoryPressureKillSettings.thresholdGBKey)
+    private var memoryPressureKillThresholdGB = MemoryPressureKillSettings.defaultThresholdGB
     @AppStorage("sidebarTintHex") private var sidebarTintHex = SidebarTintDefaults.hex
     @AppStorage("sidebarTintHexLight") private var sidebarTintHexLight: String?
     @AppStorage("sidebarTintHexDark") private var sidebarTintHexDark: String?
@@ -4767,6 +4823,39 @@ struct SettingsView: View {
                                 .labelsHidden()
                                 .controlSize(.small)
                         }
+
+                        SettingsCardDivider()
+
+                        SettingsCardRow(
+                            String(localized: "settings.app.memoryPressureKill", defaultValue: "Kill on Critical Memory Pressure"),
+                            subtitle: String(localized: "settings.app.memoryPressureKill.subtitle", defaultValue: "When system memory is critically low, automatically kill the heaviest terminal process and close its workspace to prevent a system crash.")
+                        ) {
+                            Toggle("", isOn: $memoryPressureKillEnabled)
+                                .labelsHidden()
+                                .controlSize(.small)
+                        }
+
+                        if memoryPressureKillEnabled {
+                            SettingsCardDivider()
+
+                            SettingsCardRow(
+                                String(localized: "settings.app.memoryPressureKillThreshold", defaultValue: "Kill Threshold (GB)"),
+                                subtitle: String(localized: "settings.app.memoryPressureKillThreshold.subtitle", defaultValue: "A workspace is eligible for kill if it exceeds this amount or uses more than 50% of tracked terminal memory.")
+                            ) {
+                                HStack(spacing: 6) {
+                                    Slider(
+                                        value: $memoryPressureKillThresholdGB,
+                                        in: MemoryPressureKillSettings.minimumThresholdGB...MemoryPressureKillSettings.maximumThresholdGB,
+                                        step: 1.0
+                                    )
+                                    .frame(width: 120)
+                                    Text(String(format: "%.0f GB", memoryPressureKillThresholdGB))
+                                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                                        .monospacedDigit()
+                                        .frame(width: 40, alignment: .trailing)
+                                }
+                            }
+                        }
                     }
 
                     SettingsSectionHeader(title: String(localized: "settings.section.workspaceColors", defaultValue: "Workspace Colors"))
@@ -5586,6 +5675,8 @@ struct SettingsView: View {
         memoryUsageShowInSidebar = MemoryUsageDisplaySettings.defaultShowInSidebar
         memoryUsageShowInPaneTabs = MemoryUsageDisplaySettings.defaultShowInPaneTabs
         memoryUsageShowInFooter = MemoryUsageDisplaySettings.defaultShowInFooter
+        memoryPressureKillEnabled = MemoryPressureKillSettings.defaultEnabled
+        memoryPressureKillThresholdGB = MemoryPressureKillSettings.defaultThresholdGB
         sidebarTintHex = SidebarTintDefaults.hex
         sidebarTintHexLight = nil
         sidebarTintHexDark = nil
