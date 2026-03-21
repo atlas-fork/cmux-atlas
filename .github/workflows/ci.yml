@@ -497,14 +497,16 @@ jobs:
           SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
           HELPER_PATH="/tmp/create-virtual-display"
           MANIFEST_PATH="/tmp/cmux-ui-test-display-harness.json"
-          READY_PATH="/tmp/cmux-ci-display.ready"
-          DISPLAY_ID_PATH="/tmp/cmux-ci-display.id"
-          START_PATH="/tmp/cmux-ci-display.start"
-          DONE_PATH="/tmp/cmux-ci-display.done"
-          HELPER_LOG="/tmp/cmux-ci-display-helper.log"
+          SIGNAL_DIR="$TMPDIR/cmux-ci-display"
+          mkdir -p "$SIGNAL_DIR"
+          READY_PATH="$SIGNAL_DIR/ready"
+          DISPLAY_ID_PATH="$SIGNAL_DIR/id"
+          START_PATH="$SIGNAL_DIR/start"
+          DONE_PATH="$SIGNAL_DIR/done"
+          HELPER_LOG="$SIGNAL_DIR/helper.log"
 
           rm -f "$MANIFEST_PATH" "$READY_PATH" "$DISPLAY_ID_PATH" "$START_PATH" "$DONE_PATH" "$HELPER_LOG"
-          trap 'kill %1 2>/dev/null; rm -f "$MANIFEST_PATH" "$READY_PATH" "$DISPLAY_ID_PATH" "$START_PATH" "$DONE_PATH" "$HELPER_LOG"' EXIT
+          trap 'kill %1 2>/dev/null; rm -rf "$MANIFEST_PATH" "$SIGNAL_DIR"' EXIT
 
           # Diagnostics: check display environment
           echo "=== Display environment diagnostics ==="
