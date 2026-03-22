@@ -350,13 +350,18 @@ jobs:
       - name: Create virtual display
         run: |
           set -euo pipefail
-          clang -framework Foundation -framework CoreGraphics \
-            -o /tmp/create-virtual-display scripts/create-virtual-display.m
-          /tmp/create-virtual-display &
-          VDISPLAY_PID=$!
-          echo "VDISPLAY_PID=$VDISPLAY_PID" >> "$GITHUB_ENV"
-          sleep 3
-          kill -0 "$VDISPLAY_PID"
+          # Self-hosted runners may already have a physical display; skip virtual display if one exists.
+          if system_profiler SPDisplaysDataType 2>/dev/null | grep -q "Resolution:"; then
+            echo "Physical display detected, skipping virtual display creation"
+          else
+            clang -framework Foundation -framework CoreGraphics \
+              -o /tmp/create-virtual-display scripts/create-virtual-display.m
+            /tmp/create-virtual-display &
+            VDISPLAY_PID=$!
+            echo "VDISPLAY_PID=$VDISPLAY_PID" >> "$GITHUB_ENV"
+            sleep 3
+            kill -0 "$VDISPLAY_PID"
+          fi
 
       - name: Run workspace churn typing-lag regression
         run: |
