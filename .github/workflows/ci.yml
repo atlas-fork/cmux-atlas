@@ -179,11 +179,16 @@ jobs:
             sleep $((attempt * 5))
           done
 
-      - name: Kill stale cmux processes from prior jobs
+      - name: Kill stale processes and reset test environment
         run: |
           pkill -f "cmux Atlas DEV" 2>/dev/null || true
           pkill -f "cmux Atlas" 2>/dev/null || true
-          sleep 2
+          # Kill any stale xcodebuild or test processes
+          pkill -f "xctest" 2>/dev/null || true
+          pkill -f "XCTRunner" 2>/dev/null || true
+          # Reset the testmanagerd daemon that coordinates test execution
+          pkill -f "testmanagerd" 2>/dev/null || true
+          sleep 3
 
       - name: Run unit tests
         run: |
