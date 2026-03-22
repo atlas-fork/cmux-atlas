@@ -179,6 +179,12 @@ jobs:
             sleep $((attempt * 5))
           done
 
+      - name: Kill stale cmux processes from prior jobs
+        run: |
+          pkill -f "cmux Atlas DEV" 2>/dev/null || true
+          pkill -f "cmux Atlas" 2>/dev/null || true
+          sleep 2
+
       - name: Run unit tests
         run: |
           set -euo pipefail
