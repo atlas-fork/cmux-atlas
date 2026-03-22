@@ -182,7 +182,7 @@ jobs:
               -disableAutomaticPackageResolution \
               -destination "platform=macOS" \
               -skip-testing:cmuxTests/AppDelegateShortcutRoutingTests/testCmdWClosesWindowWhenClosingLastSurfaceInLastWorkspace \
-              -IDEBuildOperationMaxNumberOfConcurrentCompileTasks=4 \
+              -IDEBuildOperationMaxNumberOfConcurrentCompileTasks=2 \
               test 2>&1
           }
 
