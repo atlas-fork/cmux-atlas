@@ -1450,10 +1450,11 @@ class TabManager: ObservableObject {
         let panelId: UUID
     }
 
-    private struct GitHubPullRequestViewItem: Decodable {
+    struct GitHubPullRequestProbeItem: Decodable, Equatable {
         let number: Int
         let state: String
         let url: String
+        let updatedAt: String?
     }
 
     private struct GitHubPullRequestCheckItem: Decodable {
@@ -2241,17 +2242,40 @@ class TabManager: ObservableObject {
         directory: String,
         branch: String
     ) -> WorkspacePullRequestSnapshot {
-        guard let repoSlug = githubRepositorySlug(directory: directory) else {
+        let repoSlugs = githubRepositorySlugs(directory: directory)
+        guard !repoSlugs.isEmpty else {
             return .unsupportedRepository
         }
 
+        var sawTransientFailure = false
+        for repoSlug in repoSlugs {
+            switch workspacePullRequestSnapshot(directory: directory, branch: branch, repoSlug: repoSlug) {
+            case .resolved(let pullRequest):
+                return .resolved(pullRequest)
+            case .transientFailure:
+                sawTransientFailure = true
+            case .notFound, .unsupportedRepository:
+                continue
+            }
+        }
+
+        return sawTransientFailure ? .transientFailure : .notFound
+    }
+
+    private nonisolated static func workspacePullRequestSnapshot(
+        directory: String,
+        branch: String,
+        repoSlug: String
+    ) -> WorkspacePullRequestSnapshot {
         let result = runCommandResult(
             directory: directory,
             executable: "gh",
             arguments: [
-                "pr", "view", branch,
+                "pr", "list",
                 "--repo", repoSlug,
-                "--json", "number,state,url",
+                "--state", "all",
+                "--head", branch,
+                "--json", "number,state,url,updatedAt",
             ],
             timeout: workspacePullRequestProbeTimeout
         )
@@ -2288,28 +2312,17 @@ class TabManager: ObservableObject {
         }
 
         if exitStatus != 0 {
-            let stderr = result.stderr ?? ""
-            if prErrorIndicatesNoPullRequest(stderr) {
-#if DEBUG
-                dlog(
-                    "workspace.gitProbe.pr.none dir=\(directory) branch=\(branch) " +
-                    "repo=\(repoSlug) stderr=\(debugLogSnippet(stderr) ?? "none")"
-                )
-#endif
-                return .notFound
-            }
 #if DEBUG
             dlog(
                 "workspace.gitProbe.pr.fail dir=\(directory) branch=\(branch) " +
-                "repo=\(repoSlug) status=exit=\(exitStatus) stderr=\(debugLogSnippet(stderr) ?? "none")"
+                "repo=\(repoSlug) status=exit=\(exitStatus) stderr=\(debugLogSnippet(result.stderr) ?? "none")"
             )
 #endif
             return .transientFailure
         }
 
         let output = result.stdout ?? ""
-        guard !output.isEmpty,
-              let pullRequest = decodeJSON(GitHubPullRequestViewItem.self, from: output) else {
+        guard let pullRequests = decodeJSON([GitHubPullRequestProbeItem].self, from: output) else {
 #if DEBUG
             dlog(
                 "workspace.gitProbe.pr.parseFail dir=\(directory) branch=\(branch) " +
@@ -2317,6 +2330,16 @@ class TabManager: ObservableObject {
             )
 #endif
             return .transientFailure
+        }
+
+        guard let pullRequest = preferredPullRequest(from: pullRequests) else {
+#if DEBUG
+            dlog(
+                "workspace.gitProbe.pr.none dir=\(directory) branch=\(branch) " +
+                "repo=\(repoSlug)"
+            )
+#endif
+            return .notFound
         }
 
         guard let status = pullRequestStatus(from: pullRequest.state),
@@ -2350,6 +2373,61 @@ class TabManager: ObservableObject {
                 checks: checks
             )
         )
+    }
+
+    nonisolated static func preferredPullRequest(
+        from pullRequests: [GitHubPullRequestProbeItem]
+    ) -> GitHubPullRequestProbeItem? {
+        func statusPriority(_ status: SidebarPullRequestStatus) -> Int {
+            switch status {
+            case .open:
+                return 3
+            case .merged:
+                return 2
+            case .closed:
+                return 1
+            }
+        }
+
+        func isPreferred(
+            candidate: GitHubPullRequestProbeItem,
+            over current: GitHubPullRequestProbeItem
+        ) -> Bool {
+            guard let candidateStatus = pullRequestStatus(from: candidate.state),
+                  let currentStatus = pullRequestStatus(from: current.state) else {
+                return false
+            }
+
+            let candidatePriority = statusPriority(candidateStatus)
+            let currentPriority = statusPriority(currentStatus)
+            if candidatePriority != currentPriority {
+                return candidatePriority > currentPriority
+            }
+
+            let candidateUpdatedAt = candidate.updatedAt ?? ""
+            let currentUpdatedAt = current.updatedAt ?? ""
+            if candidateUpdatedAt != currentUpdatedAt {
+                return candidateUpdatedAt > currentUpdatedAt
+            }
+
+            return candidate.number > current.number
+        }
+
+        var best: GitHubPullRequestProbeItem?
+        for pullRequest in pullRequests {
+            guard pullRequestStatus(from: pullRequest.state) != nil,
+                  URL(string: pullRequest.url) != nil else {
+                continue
+            }
+            guard let currentBest = best else {
+                best = pullRequest
+                continue
+            }
+            if isPreferred(candidate: pullRequest, over: currentBest) {
+                best = pullRequest
+            }
+        }
+        return best
     }
 
     private nonisolated static func pullRequestChecksStatus(
@@ -2424,17 +2502,6 @@ class TabManager: ObservableObject {
     private nonisolated static func decodeJSON<T: Decodable>(_ type: T.Type, from text: String) -> T? {
         guard let data = text.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
-    }
-
-    private nonisolated static func prErrorIndicatesNoPullRequest(_ text: String?) -> Bool {
-        let normalized = text?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        guard !normalized.isEmpty else { return false }
-        return normalized.contains("no pull requests found")
-            || normalized.contains("no pull request found")
-            || normalized.contains("no pull requests associated")
-            || normalized.contains("no pull request associated")
     }
 
     private nonisolated static func isFailingCheckState(bucket: String?, state: String?) -> Bool {
@@ -2546,14 +2613,66 @@ class TabManager: ObservableObject {
         )
     }
 
-    private nonisolated static func githubRepositorySlug(directory: String) -> String? {
-        guard let remoteURL = runGitCommand(
-            directory: directory,
-            arguments: ["remote", "get-url", "origin"]
-        ) else {
-            return nil
+    nonisolated static func githubRepositorySlugs(fromGitRemoteVOutput output: String) -> [String] {
+        var slugByRemoteName: [String: String] = [:]
+
+        for line in output.split(whereSeparator: \.isNewline) {
+            let parts = line.split(whereSeparator: \.isWhitespace)
+            guard parts.count >= 3 else { continue }
+
+            let remoteName = String(parts[0])
+            let remoteURL = String(parts[1])
+            let remoteKind = String(parts[2])
+            guard remoteKind == "(fetch)",
+                  let repoSlug = githubRepositorySlug(fromRemoteURL: remoteURL) else {
+                continue
+            }
+
+            if slugByRemoteName[remoteName] == nil {
+                slugByRemoteName[remoteName] = repoSlug
+            }
         }
 
+        let orderedRemoteNames = slugByRemoteName.keys.sorted { lhs, rhs in
+            let lhsPriority = githubRemotePriority(lhs)
+            let rhsPriority = githubRemotePriority(rhs)
+            if lhsPriority != rhsPriority {
+                return lhsPriority < rhsPriority
+            }
+            return lhs < rhs
+        }
+
+        var orderedSlugs: [String] = []
+        var seen: Set<String> = []
+        for remoteName in orderedRemoteNames {
+            guard let repoSlug = slugByRemoteName[remoteName],
+                  seen.insert(repoSlug).inserted else {
+                continue
+            }
+            orderedSlugs.append(repoSlug)
+        }
+        return orderedSlugs
+    }
+
+    private nonisolated static func githubRepositorySlugs(directory: String) -> [String] {
+        guard let output = runGitCommand(directory: directory, arguments: ["remote", "-v"]) else {
+            return []
+        }
+        return githubRepositorySlugs(fromGitRemoteVOutput: output)
+    }
+
+    private nonisolated static func githubRemotePriority(_ remoteName: String) -> Int {
+        switch remoteName.lowercased() {
+        case "upstream":
+            return 0
+        case "origin":
+            return 1
+        default:
+            return 2
+        }
+    }
+
+    private nonisolated static func githubRepositorySlug(fromRemoteURL remoteURL: String) -> String? {
         let trimmed = remoteURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
@@ -3043,13 +3162,34 @@ class TabManager: ObservableObject {
         closeWorkspaceWithConfirmation(workspace)
     }
 
-    func closeWorkspaceWithConfirmation(_ workspace: Workspace) {
-        closeWorkspaceIfRunningProcess(workspace)
+    func canCloseWorkspace(_ workspace: Workspace, allowPinned: Bool = false) -> Bool {
+        allowPinned || !workspace.isPinned
     }
 
-    func closeWorkspaceWithConfirmation(tabId: UUID) {
-        guard let workspace = tabs.first(where: { $0.id == tabId }) else { return }
-        closeWorkspaceWithConfirmation(workspace)
+    @discardableResult
+    func closeWorkspaceWithConfirmation(_ workspace: Workspace) -> Bool {
+        if workspace.isPinned {
+            guard confirmClose(
+                title: String(localized: "dialog.closePinnedWorkspace.title", defaultValue: "Close pinned workspace?"),
+                message: String(
+                    localized: "dialog.closePinnedWorkspace.message",
+                    defaultValue: "This workspace is pinned. Closing it will close the workspace and all of its panels."
+                ),
+                acceptCmdD: tabs.count <= 1
+            ) else {
+                return false
+            }
+            closeWorkspaceIfRunningProcess(workspace, requiresConfirmation: false)
+            return true
+        }
+        closeWorkspaceIfRunningProcess(workspace)
+        return true
+    }
+
+    @discardableResult
+    func closeWorkspaceWithConfirmation(tabId: UUID) -> Bool {
+        guard let workspace = tabs.first(where: { $0.id == tabId }) else { return false }
+        return closeWorkspaceWithConfirmation(workspace)
     }
 
     func setSidebarSelectedWorkspaceIds(_ workspaceIds: Set<UUID>) {

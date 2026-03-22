@@ -7,6 +7,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   workflow-guard-tests:
     runs-on: ubuntu-latest
@@ -124,34 +128,21 @@ jobs:
             echo "Installing zig ${ZIG_REQUIRED} from tarball"
             curl -fSL "https://ziglang.org/download/${ZIG_REQUIRED}/zig-aarch64-macos-${ZIG_REQUIRED}.tar.xz" -o /tmp/zig.tar.xz
             tar xf /tmp/zig.tar.xz -C /tmp
-            mkdir -p "$HOME/.local/bin" "$HOME/.local/lib"
-            cp -f /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/zig "$HOME/.local/bin/zig"
-            cp -rf /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/lib "$HOME/.local/lib/zig"
-            export PATH="$HOME/.local/bin:$PATH"
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            sudo mkdir -p /usr/local/bin /usr/local/lib
+            sudo cp -f /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/zig /usr/local/bin/zig
+            sudo cp -rf /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/lib /usr/local/lib/zig
+            export PATH="/usr/local/bin:$PATH"
             zig version
           fi
 
-      # DerivedData persists on-disk between runs on the self-hosted runner.
-      # Do NOT use actions/cache for DerivedData here — it overwrites newer
-      # local build artifacts with stale cached data, causing full recompiles.
-
-      - name: Clean stale DerivedData and report status
-        run: |
-          DD="$(find ~/Library/Developer/Xcode/DerivedData -maxdepth 1 -name 'GhosttyTabs-*' -print -quit 2>/dev/null || true)"
-          if [ -n "$DD" ] && [ -d "$DD" ]; then
-            # Prior CI runs used actions/cache which restored incomplete DerivedData.
-            # If the Build/Products directory doesn't contain a successful build, wipe it.
-            if [ -d "$DD/Build/Products/Debug/cmux Atlas DEV.app" ]; then
-              echo "DerivedData has valid build at $DD"
-              du -sh "$DD" || true
-            else
-              echo "DerivedData looks stale/incomplete, cleaning for fresh build..."
-              rm -rf "$DD"
-            fi
-          else
-            echo "No DerivedData found (clean build)"
-          fi
+      - name: Cache DerivedData
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/GhosttyTabs-*
+          key: deriveddata-tests-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.pbxproj') }}
+          restore-keys: |
+            deriveddata-tests-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
+            deriveddata-tests-
 
       - name: Cache Swift packages
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -180,80 +171,26 @@ jobs:
             sleep $((attempt * 5))
           done
 
-      - name: Kill stale processes and reset test environment
-        run: |
-          pkill -f "cmux Atlas DEV" 2>/dev/null || true
-          pkill -f "cmux Atlas" 2>/dev/null || true
-          # Kill any stale xcodebuild or test processes
-          pkill -f "xctest" 2>/dev/null || true
-          pkill -f "XCTRunner" 2>/dev/null || true
-          # Reset the testmanagerd daemon that coordinates test execution
-          pkill -f "testmanagerd" 2>/dev/null || true
-          sleep 3
-
       - name: Run unit tests
         run: |
           set -euo pipefail
           SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
-          OUTPUT_LOG="/tmp/cmux-unit-tests.log"
-          WATCHDOG_TIMEOUT=90  # Kill xcodebuild if no test output for this many seconds
-
           run_unit_tests() {
-            # Write output to log file directly; use tail -f for live streaming.
-            # This lets us get xcodebuild's real PID for the watchdog.
-            > "$OUTPUT_LOG"
             xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux-unit -configuration Debug \
               -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
               -disableAutomaticPackageResolution \
               -destination "platform=macOS" \
               -skip-testing:cmuxTests/AppDelegateShortcutRoutingTests/testCmdWClosesWindowWhenClosingLastSurfaceInLastWorkspace \
-              test >> "$OUTPUT_LOG" 2>&1 &
-            local XCODEBUILD_PID=$!
-
-            # Stream output live for CI log visibility
-            tail -f "$OUTPUT_LOG" &
-            local TAIL_PID=$!
-
-            # Watchdog: kill xcodebuild if no new output for WATCHDOG_TIMEOUT seconds.
-            # This handles tests that hang indefinitely (e.g. waiting for UI state that
-            # never arrives on headless CI) without needing to pre-emptively skip them.
-            local LAST_SIZE=0
-            local STALL_SECONDS=0
-            while kill -0 "$XCODEBUILD_PID" 2>/dev/null; do
-              sleep 5
-              local CURRENT_SIZE
-              CURRENT_SIZE=$(stat -f%z "$OUTPUT_LOG" 2>/dev/null || echo "0")
-              if [ "$CURRENT_SIZE" -gt "$LAST_SIZE" ]; then
-                LAST_SIZE=$CURRENT_SIZE
-                STALL_SECONDS=0
-              else
-                STALL_SECONDS=$((STALL_SECONDS + 5))
-              fi
-              if [ "$STALL_SECONDS" -ge "$WATCHDOG_TIMEOUT" ]; then
-                echo "::warning::Watchdog: no test output for ${WATCHDOG_TIMEOUT}s — killing hung xcodebuild (PID $XCODEBUILD_PID)"
-                kill "$XCODEBUILD_PID" 2>/dev/null || true
-                # Also kill any lingering xctest/test runner processes
-                pkill -f "xctest" 2>/dev/null || true
-                pkill -f "XCTRunner" 2>/dev/null || true
-                sleep 2
-                break
-              fi
-            done
-
-            wait "$XCODEBUILD_PID" 2>/dev/null
-            local RESULT=$?
-            kill "$TAIL_PID" 2>/dev/null || true
-            return $RESULT
+              test 2>&1
           }
 
-          # xcodebuild exits 65 even for expected failures (XCTExpectFailure).
-          # The watchdog may also kill xcodebuild if a test hangs (non-zero exit).
+          # Stream output via tee so CI logs are visible in real time, while still
+          # capturing for post-run analysis of expected vs unexpected failures.
           set +e
-          run_unit_tests
-          EXIT_CODE=$?
+          run_unit_tests | tee /tmp/test-output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          OUTPUT=$(cat /tmp/test-output.txt)
           set -e
-
-          OUTPUT="$(cat "$OUTPUT_LOG")"
 
           # SwiftPM binary artifact resolution can occasionally fail on ephemeral
           # runners with "Could not resolve package dependencies". Retry once after
@@ -264,26 +201,19 @@ jobs:
             mkdir -p ~/Library/Caches/org.swift.swiftpm
             rm -rf ~/Library/Developer/Xcode/DerivedData/GhosttyTabs-*
             set +e
-            run_unit_tests
-            EXIT_CODE=$?
+            run_unit_tests | tee /tmp/test-output.txt
+            EXIT_CODE=${PIPESTATUS[0]}
+            OUTPUT=$(cat /tmp/test-output.txt)
             set -e
-            OUTPUT="$(cat "$OUTPUT_LOG")"
           fi
 
           if [ "$EXIT_CODE" -ne 0 ]; then
-            # Check all "Executed" summary lines from completed test suites.
-            # When the watchdog kills a hung test, earlier suites still have summaries.
-            SUMMARIES=$(echo "$OUTPUT" | grep "Executed.*test.*with.*failure" || true)
-            if [ -z "$SUMMARIES" ]; then
-              echo "No test execution summary found — tests may not have started"
-              exit 1
-            fi
-            # Every completed suite must have 0 unexpected failures
-            if echo "$SUMMARIES" | grep -v "(0 unexpected)" | grep -q .; then
+            SUMMARY=$(echo "$OUTPUT" | grep "Executed.*tests.*with.*failures" | tail -1)
+            if echo "$SUMMARY" | grep -q "(0 unexpected)"; then
+              echo "All failures are expected, treating as pass"
+            else
               echo "Unexpected test failures detected"
               exit 1
-            else
-              echo "All failures are expected, treating as pass"
             fi
           fi
 
@@ -312,9 +242,9 @@ jobs:
 
   tests-build-and-lag:
     # Build the full cmux scheme and run the lag regression on WarpBuild.
-    # XCUITests cannot run on WarpBuild (Virtualization.framework limitation:
-    # XCUIApplication stuck "Running Background", 62s activation timeout per
-    # test). Interactive UI tests run via test-e2e.yml on GitHub-hosted runners.
+    # Keep lag validation separate from UI regressions so functional UI failures
+    # and performance regressions stay isolated. Broader interactive UI suites
+    # still run via test-e2e.yml on GitHub-hosted runners.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, atlas-macos-arm64]
     timeout-minutes: 60
@@ -363,15 +293,21 @@ jobs:
             echo "Installing zig ${ZIG_REQUIRED} from tarball"
             curl -fSL "https://ziglang.org/download/${ZIG_REQUIRED}/zig-aarch64-macos-${ZIG_REQUIRED}.tar.xz" -o /tmp/zig.tar.xz
             tar xf /tmp/zig.tar.xz -C /tmp
-            mkdir -p "$HOME/.local/bin" "$HOME/.local/lib"
-            cp -f /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/zig "$HOME/.local/bin/zig"
-            cp -rf /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/lib "$HOME/.local/lib/zig"
-            export PATH="$HOME/.local/bin:$PATH"
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            sudo mkdir -p /usr/local/bin /usr/local/lib
+            sudo cp -f /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/zig /usr/local/bin/zig
+            sudo cp -rf /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/lib /usr/local/lib/zig
+            export PATH="/usr/local/bin:$PATH"
             zig version
           fi
 
-      # DerivedData persists on-disk between runs on the self-hosted runner.
+      - name: Cache DerivedData
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData/GhosttyTabs-*
+          key: deriveddata-build-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-${{ hashFiles('GhosttyTabs.xcodeproj/project.pbxproj') }}
+          restore-keys: |
+            deriveddata-build-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}-
+            deriveddata-build-
 
       - name: Cache Swift packages
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
@@ -418,6 +354,7 @@ jobs:
           VDISPLAY_PID=$!
           echo "VDISPLAY_PID=$VDISPLAY_PID" >> "$GITHUB_ENV"
           sleep 3
+          kill -0 "$VDISPLAY_PID"
 
       - name: Run workspace churn typing-lag regression
         run: |
@@ -433,7 +370,7 @@ jobs:
           SOCK="/tmp/cmux-debug-${TAG}.sock"
           BUNDLE_ID="$(
             /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist" 2>/dev/null \
-              || echo 'com.cmuxterm.app.debug'
+              || echo 'com.atlascodes.cmux-atlas.debug'
           )"
 
           pkill -x "cmux Atlas DEV" || true
@@ -461,7 +398,16 @@ jobs:
           CMUX_LAG_KEY_EVENTS=180 \
           python3 tests/test_workspace_churn_up_arrow_lag.py
 
-  ui-display-resolution-regression:
+      - name: Cleanup virtual display
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -n "${VDISPLAY_PID:-}" ]; then
+            kill "$VDISPLAY_PID" >/dev/null 2>&1 || true
+          fi
+          rm -f /tmp/create-virtual-display
+
+  ui-regressions:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, atlas-macos-arm64]
     timeout-minutes: 25
@@ -502,11 +448,10 @@ jobs:
             echo "Installing zig ${ZIG_REQUIRED} from tarball"
             curl -fSL "https://ziglang.org/download/${ZIG_REQUIRED}/zig-aarch64-macos-${ZIG_REQUIRED}.tar.xz" -o /tmp/zig.tar.xz
             tar xf /tmp/zig.tar.xz -C /tmp
-            mkdir -p "$HOME/.local/bin" "$HOME/.local/lib"
-            cp -f /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/zig "$HOME/.local/bin/zig"
-            cp -rf /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/lib "$HOME/.local/lib/zig"
-            export PATH="$HOME/.local/bin:$PATH"
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            sudo mkdir -p /usr/local/bin /usr/local/lib
+            sudo cp -f /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/zig /usr/local/bin/zig
+            sudo cp -rf /tmp/zig-aarch64-macos-${ZIG_REQUIRED}/lib /usr/local/lib/zig
+            export PATH="/usr/local/bin:$PATH"
             zig version
           fi
 
@@ -514,8 +459,8 @@ jobs:
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: .ci-source-packages
-          key: spm-ui-display-resolution-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
-          restore-keys: spm-ui-display-resolution-
+          key: spm-ui-regressions-${{ hashFiles('GhosttyTabs.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+          restore-keys: spm-ui-regressions-
 
       - name: Resolve Swift packages
         run: |
@@ -547,17 +492,9 @@ jobs:
           rm -f "$MANIFEST_PATH"
           trap 'rm -f "$MANIFEST_PATH"' EXIT
 
-          # Kill any leftover cmux instances from previous jobs
-          pkill -f "cmux Atlas DEV" 2>/dev/null || true
-          pkill -f "cmux Atlas" 2>/dev/null || true
-          sleep 1
-
-          # Build helper binary for the test to launch
           clang -framework Foundation -framework CoreGraphics \
             -o "$HELPER_PATH" scripts/create-virtual-display.m
-          chmod +x "$HELPER_PATH"
 
-          # Write manifest so the test knows where to find the pre-built helper
           cat >"$MANIFEST_PATH" <<EOF
           {"helperBinaryPath":"$HELPER_PATH"}
           EOF
@@ -567,4 +504,16 @@ jobs:
             -disableAutomaticPackageResolution \
             -destination "platform=macOS" \
             -only-testing:cmuxUITests/DisplayResolutionRegressionUITests \
+            test
+
+      - name: Run browser find focus UI regression
+        run: |
+          set -euo pipefail
+          SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
+          xcodebuild -project GhosttyTabs.xcodeproj -scheme cmux -configuration Debug \
+            -clonedSourcePackagesDirPath "$SOURCE_PACKAGES_DIR" \
+            -disableAutomaticPackageResolution \
+            -destination "platform=macOS" \
+            -maximum-test-execution-time-allowance 120 \
+            -only-testing:cmuxUITests/BrowserPaneNavigationKeybindUITests/testCmdFFocusesBrowserFindFieldAfterCmdDCmdLNavigation \
             test

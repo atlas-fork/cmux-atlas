@@ -19,7 +19,7 @@ fi
 if ! awk '
   /^  tests:/ { in_tests=1; next }
   in_tests && /^  [^[:space:]]/ { in_tests=0 }
-  in_tests && /atlas-macos-arm64/ { saw_warp=1 }
+  in_tests && /runs-on: atlas-macos-arm64/ { saw_warp=1 }
   in_tests && /github.event.pull_request.head.repo.full_name == github.repository/ { saw_guard=1 }
   END { exit !(saw_warp && saw_guard) }
 ' "$WORKFLOW_FILE"; then
@@ -31,7 +31,7 @@ fi
 if ! awk '
   /^  tests-build-and-lag:/ { in_tests=1; next }
   in_tests && /^  [^[:space:]]/ { in_tests=0 }
-  in_tests && /atlas-macos-arm64/ { saw_warp=1 }
+  in_tests && /runs-on: atlas-macos-arm64/ { saw_warp=1 }
   in_tests && /github.event.pull_request.head.repo.full_name == github.repository/ { saw_guard=1 }
   END { exit !(saw_warp && saw_guard) }
 ' "$WORKFLOW_FILE"; then
@@ -39,18 +39,18 @@ if ! awk '
   exit 1
 fi
 
-# ui-display-resolution-regression: must use atlas-macos-arm64 runner with fork guard
+# ui-regressions: must use WarpBuild runner with fork guard (paid runner)
 if ! awk '
-  /^  ui-display-resolution-regression:/ { in_tests=1; next }
+  /^  ui-regressions:/ { in_tests=1; next }
   in_tests && /^  [^[:space:]]/ { in_tests=0 }
-  in_tests && /atlas-macos-arm64/ { saw_warp=1 }
+  in_tests && /runs-on: atlas-macos-arm64/ { saw_warp=1 }
   in_tests && /github.event.pull_request.head.repo.full_name == github.repository/ { saw_guard=1 }
   END { exit !(saw_warp && saw_guard) }
 ' "$WORKFLOW_FILE"; then
-  echo "FAIL: ui-display-resolution-regression block must keep both atlas-macos-arm64 runner and fork guard"
+  echo "FAIL: ui-regressions block must keep both atlas-macos-arm64 runner and fork guard"
   exit 1
 fi
 
 echo "PASS: tests WarpBuild runner fork guard is present"
 echo "PASS: tests-build-and-lag WarpBuild runner fork guard is present"
-echo "PASS: ui-display-resolution-regression WarpBuild runner fork guard is present"
+echo "PASS: ui-regressions WarpBuild runner fork guard is present"
