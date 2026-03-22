@@ -974,3 +974,66 @@ final class TabManagerReopenClosedBrowserFocusTests: XCTestCase {
         wait(for: [expectation], timeout: 1.0)
     }
 }
+
+// MARK: - MemoryPressureKillSettings Tests
+
+final class MemoryPressureKillSettingsTests: XCTestCase {
+
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: "cmux-memory-pressure-tests-\(UUID().uuidString)")!
+    }
+
+    override func tearDown() {
+        if let suiteName = defaults.volatileDomainNames.first {
+            UserDefaults.standard.removePersistentDomain(forName: suiteName)
+        }
+        defaults = nil
+        super.tearDown()
+    }
+
+    func testDefaultEnabledIsTrue() {
+        XCTAssertTrue(MemoryPressureKillSettings.isEnabled(defaults: defaults))
+    }
+
+    func testDisabledWhenSetToFalse() {
+        defaults.set(false, forKey: MemoryPressureKillSettings.enabledKey)
+        XCTAssertFalse(MemoryPressureKillSettings.isEnabled(defaults: defaults))
+    }
+
+    func testEnabledWhenSetToTrue() {
+        defaults.set(true, forKey: MemoryPressureKillSettings.enabledKey)
+        XCTAssertTrue(MemoryPressureKillSettings.isEnabled(defaults: defaults))
+    }
+
+    func testDefaultThresholdIs4GB() {
+        let expected = Int64(4.0 * 1024 * 1024 * 1024)
+        XCTAssertEqual(MemoryPressureKillSettings.thresholdBytes(defaults: defaults), expected)
+    }
+
+    func testCustomThreshold() {
+        defaults.set(8.0, forKey: MemoryPressureKillSettings.thresholdGBKey)
+        let expected = Int64(8.0 * 1024 * 1024 * 1024)
+        XCTAssertEqual(MemoryPressureKillSettings.thresholdBytes(defaults: defaults), expected)
+    }
+
+    func testThresholdClampedToMinimum() {
+        defaults.set(0.1, forKey: MemoryPressureKillSettings.thresholdGBKey)
+        let expected = Int64(MemoryPressureKillSettings.minimumThresholdGB * 1024 * 1024 * 1024)
+        XCTAssertEqual(MemoryPressureKillSettings.thresholdBytes(defaults: defaults), expected)
+    }
+
+    func testThresholdClampedToMaximum() {
+        defaults.set(999.0, forKey: MemoryPressureKillSettings.thresholdGBKey)
+        let expected = Int64(MemoryPressureKillSettings.maximumThresholdGB * 1024 * 1024 * 1024)
+        XCTAssertEqual(MemoryPressureKillSettings.thresholdBytes(defaults: defaults), expected)
+    }
+
+    func testSystemMemoryPressureLevelOrdering() {
+        XCTAssertLessThan(SystemMemoryPressureLevel.normal, .warning)
+        XCTAssertLessThan(SystemMemoryPressureLevel.warning, .critical)
+        XCTAssertLessThan(SystemMemoryPressureLevel.normal, .critical)
+    }
+}
