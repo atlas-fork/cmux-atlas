@@ -73,11 +73,11 @@ Sidebar shows git branch, linked PR status/number, working directory, listening 
 
 ### DMG (recommended)
 
-<a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
+<a href="https://github.com/atlascodesai/cmux-atlas/releases/latest/download/cmux-macos.dmg">
   <img src="./docs/assets/macos-badge.png" alt="Download cmux for macOS" width="180" />
 </a>
 
-Open the `.dmg` and drag cmux to your Applications folder. cmux auto-updates via Sparkle, so you only need to download once.
+Open the `.dmg` and drag cmux Atlas to your Applications folder. Fork releases auto-update via Sparkle using this fork's GitHub Releases feed, so install from the link above if you want Atlas updates.
 
 ### Homebrew
 
@@ -86,7 +86,9 @@ brew tap manaflow-ai/cmux
 brew install --cask cmux
 ```
 
-To update later:
+Homebrew currently tracks the upstream stable app, not this fork. To use the Atlas fork and its Sparkle auto-update channel, install from the DMG above.
+
+To update the upstream cask later:
 
 ```bash
 brew upgrade --cask cmux
