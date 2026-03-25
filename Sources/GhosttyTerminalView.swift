@@ -6678,7 +6678,6 @@ final class GhosttySurfaceScrollView: NSView {
     private let keyboardCopyModeBadgeView: GhosttyPassthroughVisualEffectView
     private let keyboardCopyModeBadgeIconView: NSImageView
     private let keyboardCopyModeBadgeLabel: NSTextField
-    private var restoredTerminalActionBannerHostingView: NSHostingView<RestoredTerminalActionBanner>?
     private let imageTransferIndicatorContainerView: NSView
     private let imageTransferIndicatorView: NSVisualEffectView
     private let imageTransferIndicatorSpinner: NSProgressIndicator
@@ -7540,8 +7539,6 @@ final class GhosttySurfaceScrollView: NSView {
         guard !keyboardCopyModeBadgeContainerView.isHidden else { return }
         if let overlay, overlay.superview === self {
             addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: overlay)
-        } else if let banner = restoredTerminalActionBannerHostingView, banner.superview === self {
-            addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: banner)
         } else {
             addSubview(keyboardCopyModeBadgeContainerView, positioned: .above, relativeTo: nil)
         }
@@ -7604,59 +7601,6 @@ final class GhosttySurfaceScrollView: NSView {
         activeImageTransferCancelHandler = nil
         imageTransferIndicatorSpinner.stopAnimation(nil)
         imageTransferIndicatorContainerView.isHidden = true
-    }
-
-    func setRestoredTerminalActionBanner(
-        action: RestoredTerminalActionSnapshot?,
-        onRun: (() -> Void)?,
-        onDismiss: (() -> Void)?
-    ) {
-        if !Thread.isMainThread {
-            DispatchQueue.main.async { [weak self] in
-                self?.setRestoredTerminalActionBanner(action: action, onRun: onRun, onDismiss: onDismiss)
-            }
-            return
-        }
-
-        guard let action, let onRun, let onDismiss else {
-            restoredTerminalActionBannerHostingView?.removeFromSuperview()
-            restoredTerminalActionBannerHostingView = nil
-            return
-        }
-
-        let rootView = RestoredTerminalActionBanner(
-            action: action,
-            onRun: onRun,
-            onDismiss: onDismiss
-        )
-
-        if let banner = restoredTerminalActionBannerHostingView {
-            banner.rootView = rootView
-            if banner.superview !== self {
-                mountTopBannerHostingView(banner)
-            }
-            return
-        }
-
-        let banner = NSHostingView(rootView: rootView)
-        restoredTerminalActionBannerHostingView = banner
-        mountTopBannerHostingView(banner)
-    }
-
-    private func mountTopBannerHostingView(_ view: NSView) {
-        view.removeFromSuperview()
-        view.translatesAutoresizingMaskIntoConstraints = false
-        if let overlay = searchOverlayHostingView, overlay.superview === self {
-            addSubview(view, positioned: .below, relativeTo: overlay)
-        } else {
-            addSubview(view, positioned: .above, relativeTo: nil)
-        }
-        NSLayoutConstraint.activate([
-            view.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            view.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
-        ])
-        updateKeyboardCopyModeBadgeZOrder(relativeTo: searchOverlayHostingView)
     }
 
     private func makeSearchOverlayRootView(
@@ -9523,9 +9467,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
     var inactiveOverlayColor: NSColor = .clear
     var inactiveOverlayOpacity: Double = 0
     var searchState: TerminalSurface.SearchState? = nil
-    var restoredTerminalAction: RestoredTerminalActionSnapshot? = nil
-    var onRunRestoredTerminalAction: ((RestoredTerminalActionSnapshot) -> Void)? = nil
-    var onDismissRestoredTerminalAction: (() -> Void)? = nil
     var reattachToken: UInt64 = 0
     var onFocus: ((UUID) -> Void)? = nil
     var onTriggerFlash: (() -> Void)? = nil
@@ -9729,15 +9670,6 @@ struct GhosttyTerminalView: NSViewRepresentable {
                 visible: showsInactiveOverlay
             )
             hostedView.setNotificationRing(visible: showsUnreadNotificationRing)
-            hostedView.setRestoredTerminalActionBanner(
-                action: restoredTerminalAction,
-                onRun: restoredTerminalAction.flatMap { action in
-                    onRunRestoredTerminalAction.map { handler in
-                        { handler(action) }
-                    }
-                },
-                onDismiss: onDismissRestoredTerminalAction
-            )
             hostedView.setSearchOverlay(searchState: searchState)
             hostedView.syncKeyStateIndicator(text: terminalSurface.currentKeyStateIndicatorText)
         }

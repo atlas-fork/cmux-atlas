@@ -236,7 +236,6 @@ extension Workspace {
         return SessionWorkspaceSnapshot(
             processTitle: processTitle,
             customTitle: customTitle,
-            organizationName: organizationName,
             customColor: customColor,
             isPinned: isPinned,
             currentDirectory: currentDirectory,
@@ -252,7 +251,6 @@ extension Workspace {
 
     func restoreSessionSnapshot(_ snapshot: SessionWorkspaceSnapshot) {
         restoredTerminalScrollbackByPanelId.removeAll(keepingCapacity: false)
-        restoredTerminalActions.removeAll(keepingCapacity: false)
 
         let normalizedCurrentDirectory = snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         if !normalizedCurrentDirectory.isEmpty {
@@ -277,7 +275,6 @@ extension Workspace {
 
         applyProcessTitle(snapshot.processTitle)
         setCustomTitle(snapshot.customTitle)
-        setOrganizationName(snapshot.organizationName)
         setCustomColor(snapshot.customColor)
         isPinned = snapshot.isPinned
 
@@ -612,9 +609,16 @@ extension Workspace {
                 restoredTerminalScrollbackByPanelId.removeValue(forKey: terminalPanel.id)
             }
             if let restoredTerminalAction = snapshot.restoredTerminalAction {
-                restoredTerminalActions[terminalPanel.id] = restoredTerminalAction
-            } else {
-                restoredTerminalActions.removeValue(forKey: terminalPanel.id)
+                let permissiveModeEnabled: Bool
+                switch restoredTerminalAction.agentType {
+                case .claudeCode:
+                    permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .claudeCode)
+                case .codex:
+                    permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .codex)
+                }
+                if let command = restoredTerminalAction.resumeCommand(permissiveModeEnabled: permissiveModeEnabled) {
+                    terminalPanel.sendText(command)
+                }
             }
             applySessionPanelMetadata(snapshot, toPanelId: terminalPanel.id)
             return terminalPanel.id
@@ -5158,6 +5162,22 @@ struct ClosedBrowserPanelRestoreSnapshot {
     let fallbackAnchorPaneId: UUID?
 }
 
+struct ClosedTerminalPanelRestoreSnapshot {
+    let workspaceId: UUID
+    let originalPaneId: UUID
+    let originalTabIndex: Int
+    let workingDirectory: String?
+    let restoredTerminalAction: RestoredTerminalActionSnapshot
+    let fallbackSplitOrientation: SplitOrientation?
+    let fallbackSplitInsertFirst: Bool
+    let fallbackAnchorPaneId: UUID?
+}
+
+enum ClosedPanelRestoreEntry {
+    case browser(ClosedBrowserPanelRestoreSnapshot)
+    case terminal(ClosedTerminalPanelRestoreSnapshot)
+}
+
 /// Workspace represents a sidebar tab.
 /// Each workspace contains one BonsplitController that manages split panes and nested surfaces.
 @MainActor
@@ -5165,7 +5185,6 @@ final class Workspace: Identifiable, ObservableObject {
     let id: UUID
     @Published var title: String
     @Published var customTitle: String?
-    @Published var organizationName: String?
     @Published var isPinned: Bool = false
     @Published var customColor: String?  // hex string, e.g. "#C0392B"
     @Published var currentDirectory: String
@@ -5201,6 +5220,8 @@ final class Workspace: Identifiable, ObservableObject {
 
     /// Callback used by TabManager to capture recently closed browser panels for Cmd+Shift+T restore.
     var onClosedBrowserPanel: ((ClosedBrowserPanelRestoreSnapshot) -> Void)?
+    /// Callback used by TabManager to capture recently closed terminal panels with AI sessions for Cmd+Shift+T restore.
+    var onClosedTerminalPanel: ((ClosedTerminalPanelRestoreSnapshot) -> Void)?
     weak var owningTabManager: TabManager?
 
 
@@ -5290,7 +5311,6 @@ final class Workspace: Identifiable, ObservableObject {
         qos: .utility
     )
     private var restoredTerminalScrollbackByPanelId: [UUID: String] = [:]
-    @Published var restoredTerminalActions: [UUID: RestoredTerminalActionSnapshot] = [:]
 
     private static func isProxyOnlyRemoteError(_ detail: String) -> Bool {
         let lowered = detail.lowercased()
@@ -6095,17 +6115,6 @@ final class Workspace: Identifiable, ObservableObject {
         }
     }
 
-    func setOrganizationName(_ name: String?) {
-        let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let resolvedName = trimmed.isEmpty ? nil : trimmed
-        guard organizationName != resolvedName else { return }
-        organizationName = resolvedName
-        NotificationCenter.default.post(
-            name: .workspaceDidUpdatePresentationMetadata,
-            object: nil,
-            userInfo: [GhosttyNotificationKey.tabId: id]
-        )
-    }
 
     // MARK: - Directory Updates
 
@@ -6118,8 +6127,12 @@ final class Workspace: Identifiable, ObservableObject {
         // Update current directory if this is the focused panel
         if panelId == focusedPanelId, currentDirectory != trimmed {
             currentDirectory = trimmed
-            // Sync editor to the new directory (e.g. after `cd`)
-            EditorSyncController.shared.workspaceDidChange(directory: trimmed)
+            // Sync editor to the new directory (e.g. after `cd`).
+            // Only trigger from the key window so multi-monitor setups don't
+            // open duplicate editor windows from inactive cmux windows.
+            if owningTabManager?.window?.isKeyWindow == true {
+                EditorSyncController.shared.workspaceDidChange(directory: trimmed)
+            }
         }
     }
 
@@ -6334,7 +6347,6 @@ final class Workspace: Identifiable, ObservableObject {
         manualUnreadMarkedAt = manualUnreadMarkedAt.filter { validSurfaceIds.contains($0.key) }
         surfaceListeningPorts = surfaceListeningPorts.filter { validSurfaceIds.contains($0.key) }
         surfaceTTYNames = surfaceTTYNames.filter { validSurfaceIds.contains($0.key) }
-        restoredTerminalActions = restoredTerminalActions.filter { validSurfaceIds.contains($0.key) }
         panelShellActivityStates = panelShellActivityStates.filter { validSurfaceIds.contains($0.key) }
         panelPullRequests = panelPullRequests.filter { validSurfaceIds.contains($0.key) }
         cachedAISessions = cachedAISessions.filter { validSurfaceIds.contains($0.key) }
@@ -6371,13 +6383,16 @@ final class Workspace: Identifiable, ObservableObject {
 
         let ttyName = surfaceTTYNames[panelId]
         let workingDirectory = panelDirectories[panelId] ?? currentDirectory
+        let workspaceId = self.id
         let generation = UUID()
         aiSessionRefreshGenerationByPanel[panelId] = generation
 
         aiSessionRefreshQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
             let snapshot = AISessionDetector.detect(
                 ttyName: ttyName,
-                workingDirectory: workingDirectory
+                workingDirectory: workingDirectory,
+                workspaceId: workspaceId,
+                panelId: panelId
             )
 
             DispatchQueue.main.async { [weak self] in
@@ -6411,7 +6426,9 @@ final class Workspace: Identifiable, ObservableObject {
         let workingDirectory = panelDirectories[panelId] ?? currentDirectory
         let snapshot = AISessionDetector.detect(
             ttyName: ttyName,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            workspaceId: self.id,
+            panelId: panelId
         )
         if let snapshot {
             cachedAISessions[panelId] = snapshot
@@ -7885,6 +7902,38 @@ final class Workspace: Identifiable, ObservableObject {
 
     private func clearStagedClosedBrowserRestoreSnapshot(for tabId: TabID) {
         pendingClosedBrowserRestoreSnapshots.removeValue(forKey: tabId)
+    }
+
+    private var pendingClosedTerminalRestoreSnapshots: [TabID: ClosedTerminalPanelRestoreSnapshot] = [:]
+
+    private func stageClosedTerminalRestoreSnapshotIfNeeded(for tab: Bonsplit.Tab, inPane pane: PaneID) {
+        guard let panelId = panelIdFromSurfaceId(tab.id),
+              panels[panelId] is TerminalPanel,
+              let tabIndex = bonsplitController.tabs(inPane: pane).firstIndex(where: { $0.id == tab.id }),
+              let action = currentRestoredTerminalAction(panelId: panelId) else {
+            pendingClosedTerminalRestoreSnapshots.removeValue(forKey: tab.id)
+            return
+        }
+
+        let fallbackPlan = browserCloseFallbackPlan(
+            forPaneId: pane.id.uuidString,
+            in: bonsplitController.treeSnapshot()
+        )
+
+        pendingClosedTerminalRestoreSnapshots[tab.id] = ClosedTerminalPanelRestoreSnapshot(
+            workspaceId: id,
+            originalPaneId: pane.id,
+            originalTabIndex: tabIndex,
+            workingDirectory: panelDirectories[panelId],
+            restoredTerminalAction: action,
+            fallbackSplitOrientation: fallbackPlan?.orientation,
+            fallbackSplitInsertFirst: fallbackPlan?.insertFirst ?? false,
+            fallbackAnchorPaneId: fallbackPlan?.anchorPaneId
+        )
+    }
+
+    private func clearStagedClosedTerminalRestoreSnapshot(for tabId: TabID) {
+        pendingClosedTerminalRestoreSnapshots.removeValue(forKey: tabId)
     }
 
     private func browserCloseFallbackPlan(
@@ -9882,6 +9931,7 @@ extension Workspace: BonsplitDelegate {
 
         if forceCloseTabIds.contains(tab.id) {
             stageClosedBrowserRestoreSnapshotIfNeeded(for: tab, inPane: pane)
+            stageClosedTerminalRestoreSnapshotIfNeeded(for: tab, inPane: pane)
             recordPostCloseSelection()
             return true
         }
@@ -9889,12 +9939,14 @@ extension Workspace: BonsplitDelegate {
         if let panelId = panelIdFromSurfaceId(tab.id),
            pinnedPanelIds.contains(panelId) {
             clearStagedClosedBrowserRestoreSnapshot(for: tab.id)
+            clearStagedClosedTerminalRestoreSnapshot(for: tab.id)
             NSSound.beep()
             return false
         }
 
         if explicitUserClose && shouldCloseWorkspaceOnLastSurface(for: tab.id) {
             clearStagedClosedBrowserRestoreSnapshot(for: tab.id)
+            clearStagedClosedTerminalRestoreSnapshot(for: tab.id)
             owningTabManager?.closeWorkspaceWithConfirmation(self)
             return false
         }
@@ -9912,6 +9964,7 @@ extension Workspace: BonsplitDelegate {
         // this gating on the second pass.
         if panelNeedsConfirmClose(panelId: panelId, fallbackNeedsConfirmClose: terminalPanel.needsConfirmClose()) {
             clearStagedClosedBrowserRestoreSnapshot(for: tab.id)
+            clearStagedClosedTerminalRestoreSnapshot(for: tab.id)
             if pendingCloseConfirmTabIds.contains(tab.id) {
                 return false
             }
@@ -9938,6 +9991,7 @@ extension Workspace: BonsplitDelegate {
         }
 
         clearStagedClosedBrowserRestoreSnapshot(for: tab.id)
+        stageClosedTerminalRestoreSnapshotIfNeeded(for: tab, inPane: pane)
         recordPostCloseSelection()
         return true
     }
@@ -9946,6 +10000,7 @@ extension Workspace: BonsplitDelegate {
         forceCloseTabIds.remove(tabId)
         let selectTabId = postCloseSelectTabId.removeValue(forKey: tabId)
         let closedBrowserRestoreSnapshot = pendingClosedBrowserRestoreSnapshots.removeValue(forKey: tabId)
+        let closedTerminalRestoreSnapshot = pendingClosedTerminalRestoreSnapshots.removeValue(forKey: tabId)
         let isDetaching = detachingTabIds.remove(tabId) != nil || isDetachingCloseTransaction
 
         // Clean up our panel
@@ -9992,6 +10047,8 @@ extension Workspace: BonsplitDelegate {
         } else {
             if let closedBrowserRestoreSnapshot {
                 onClosedBrowserPanel?(closedBrowserRestoreSnapshot)
+            } else if let closedTerminalRestoreSnapshot {
+                onClosedTerminalPanel?(closedTerminalRestoreSnapshot)
             }
             panel?.close()
         }
@@ -10011,7 +10068,6 @@ extension Workspace: BonsplitDelegate {
         panelShellActivityStates.removeValue(forKey: panelId)
         surfaceTTYNames.removeValue(forKey: panelId)
         restoredTerminalScrollbackByPanelId.removeValue(forKey: panelId)
-        restoredTerminalActions.removeValue(forKey: panelId)
         PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)
         terminalInheritanceFontPointsByPanelId.removeValue(forKey: panelId)
         if lastTerminalConfigInheritancePanelId == panelId {
@@ -10161,7 +10217,6 @@ extension Workspace: BonsplitDelegate {
                 surfaceTTYNames.removeValue(forKey: panelId)
                 surfaceListeningPorts.removeValue(forKey: panelId)
                 restoredTerminalScrollbackByPanelId.removeValue(forKey: panelId)
-                restoredTerminalActions.removeValue(forKey: panelId)
                 PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)
             }
 

@@ -70,17 +70,47 @@ private func shellSingleQuoted(_ value: String) -> String {
 /// Detects AI coding agents running inside terminal sessions.
 enum AISessionDetector {
 
+    // MARK: - Hook-State Fast Path Cache
+
+    /// Memoization cache for (pid, startEpoch) → sessionId to avoid repeated JSONL scans.
+    /// Protected by `cacheLock`. Entries are evicted when the PID is no longer alive.
+    private static let cacheLock = NSLock()
+    private static var pidSessionCache: [PIDSessionCacheKey: CachedPIDSession] = [:]
+
+    private struct PIDSessionCacheKey: Hashable {
+        let pid: pid_t
+        let startEpoch: Int
+    }
+
+    private struct CachedPIDSession {
+        let sessionId: String?
+        let projectPath: String?
+    }
+
     // MARK: - Process Detection
 
     /// Detect an AI agent running under the given TTY.
     /// Returns nil if no known agent is found.
-    static func detect(ttyName: String?, workingDirectory: String?) -> AISessionSnapshot? {
+    ///
+    /// When `workspaceId` and `panelId` are provided, Claude's hook-state file
+    /// can short-circuit session-id resolution after a real Claude process match.
+    static func detect(
+        ttyName: String?,
+        workingDirectory: String?,
+        workspaceId: UUID? = nil,
+        panelId: UUID? = nil
+    ) -> AISessionSnapshot? {
         guard let ttyName, !ttyName.isEmpty else { return nil }
 
         let processes = childProcesses(forTTY: ttyName)
 
         for proc in processes {
-            if let snapshot = matchAgent(proc: proc, workingDirectory: workingDirectory) {
+            if let snapshot = matchAgent(
+                proc: proc,
+                workingDirectory: workingDirectory,
+                workspaceId: workspaceId,
+                panelId: panelId
+            ) {
                 return snapshot
             }
         }
@@ -94,12 +124,105 @@ enum AISessionDetector {
         let processes = childProcesses(forParentPID: parentPID)
 
         for proc in processes {
-            if let snapshot = matchAgent(proc: proc, workingDirectory: workingDirectory) {
+            if let snapshot = matchAgent(
+                proc: proc,
+                workingDirectory: workingDirectory,
+                workspaceId: nil,
+                panelId: nil
+            ) {
                 return snapshot
             }
         }
 
         return nil
+    }
+
+    // MARK: - Claude Hook-State Lookup
+
+    /// Reads the Claude hook-state file written by the CLI hooks.
+    /// This is used only after a real Claude process was matched on the panel's TTY.
+    private static func claudeSessionInfoFromHookState(
+        pid: pid_t,
+        workingDirectory: String?,
+        workspaceId: UUID,
+        panelId: UUID
+    ) -> ClaudeSessionInfo? {
+        let env = Foundation.ProcessInfo.processInfo.environment
+        let fm = FileManager.default
+        let path = hookStatePath(
+            envKey: "CMUX_CLAUDE_HOOK_STATE_PATH",
+            defaultPath: "~/.cmuxterm/claude-hook-sessions.json",
+            processEnv: env
+        )
+        guard fm.fileExists(atPath: path),
+              let data = fm.contents(atPath: path),
+              let store = try? JSONDecoder().decode(HookSessionStoreFile.self, from: data) else {
+            return nil
+        }
+
+        let wsToken = workspaceId.uuidString.lowercased()
+        let panelToken = panelId.uuidString.lowercased()
+
+        guard let record = store.sessions.values
+            .filter({
+                $0.workspaceId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == wsToken &&
+                $0.surfaceId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == panelToken
+            })
+            .max(by: { $0.updatedAt < $1.updatedAt }) else {
+            return nil
+        }
+
+        guard let recordPID = record.pid, recordPID > 0, recordPID == Int(pid) else {
+            return nil
+        }
+
+        let cwd = record.cwd?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let workingDirectory {
+            let trimmedWorkingDirectory = workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedWorkingDirectory.isEmpty,
+               let cwd,
+               !cwd.isEmpty,
+               cwd != trimmedWorkingDirectory {
+                return nil
+            }
+        }
+
+        let sessionId = record.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionId.isEmpty else {
+            return nil
+        }
+
+        return ClaudeSessionInfo(
+            sessionId: sessionId,
+            projectPath: cwd?.isEmpty == true ? nil : cwd,
+            score: 0
+        )
+    }
+
+    /// Minimal Codable model matching the Claude hook session file format.
+    private struct HookSessionRecord: Codable {
+        var sessionId: String
+        var workspaceId: String
+        var surfaceId: String
+        var cwd: String?
+        var pid: Int?
+        var updatedAt: TimeInterval
+    }
+
+    private struct HookSessionStoreFile: Codable {
+        var sessions: [String: HookSessionRecord] = [:]
+    }
+
+    private static func hookStatePath(
+        envKey: String,
+        defaultPath: String,
+        processEnv: [String: String]
+    ) -> String {
+        if let override = processEnv[envKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            return NSString(string: override).expandingTildeInPath
+        }
+        return NSString(string: defaultPath).expandingTildeInPath
     }
 
     // MARK: - Agent Matching
@@ -111,11 +234,18 @@ enum AISessionDetector {
         let fullCommand: String
     }
 
-    private static func matchAgent(proc: ProcessInfo, workingDirectory: String?) -> AISessionSnapshot? {
+    private static func matchAgent(
+        proc: ProcessInfo,
+        workingDirectory: String?,
+        workspaceId: UUID?,
+        panelId: UUID?
+    ) -> AISessionSnapshot? {
         snapshotForMatchedAgent(
             proc: proc,
             workingDirectory: workingDirectory,
-            resolvedProcessCwd: processCwd(pid: proc.pid)
+            resolvedProcessCwd: nil,
+            workspaceId: workspaceId,
+            panelId: panelId
         )
     }
 
@@ -123,14 +253,27 @@ enum AISessionDetector {
         proc: ProcessInfo,
         workingDirectory: String?,
         resolvedProcessCwd: String?,
+        workspaceId: UUID? = nil,
+        panelId: UUID? = nil,
         now: TimeInterval = Date().timeIntervalSince1970
     ) -> AISessionSnapshot? {
         let execName = (proc.command as NSString).lastPathComponent
 
         // Claude Code detection: binary is named "claude"
         if execName == "claude" || proc.command.hasSuffix("/claude") {
-            let resolvedCwd = resolvedProcessCwd ?? workingDirectory
-            let sessionInfo = resolveClaudeSessionId(pid: proc.pid, workingDirectory: resolvedCwd)
+            let resolvedCwd = resolvedProcessCwd ?? workingDirectory ?? processCwd(pid: proc.pid)
+            let sessionInfo: ClaudeSessionInfo? = {
+                if let workspaceId, let panelId,
+                   let hookInfo = claudeSessionInfoFromHookState(
+                    pid: proc.pid,
+                    workingDirectory: resolvedCwd,
+                    workspaceId: workspaceId,
+                    panelId: panelId
+                   ) {
+                    return hookInfo
+                }
+                return resolveClaudeSessionId(pid: proc.pid, workingDirectory: resolvedCwd)
+            }()
             return AISessionSnapshot(
                 agentType: .claudeCode,
                 sessionId: sessionInfo?.sessionId,
@@ -143,7 +286,7 @@ enum AISessionDetector {
 
         // Codex detection: binary named "codex"
         if execName == "codex" || proc.command.hasSuffix("/codex") {
-            let resolvedCwd = resolvedProcessCwd ?? workingDirectory
+            let resolvedCwd = resolvedProcessCwd ?? workingDirectory ?? processCwd(pid: proc.pid)
             return AISessionSnapshot(
                 agentType: .codex,
                 sessionId: nil,
@@ -169,9 +312,11 @@ enum AISessionDetector {
     /// Resolves the Claude Code session ID for a specific PID by correlating
     /// process start time with .jsonl entry timestamps.
     ///
+    /// Uses a `(pid, startEpoch)` cache to avoid repeated JSONL scans for the same live process.
+    ///
     /// Algorithm:
-    /// 1. Get PID's CWD → encode to Claude project dir
-    /// 2. Get PID's start time (epoch)
+    /// 1. Get PID's start time (epoch) and check memoization cache
+    /// 2. Get PID's CWD → encode to Claude project dir
     /// 3. For each .jsonl modified after PID start, find first entry >= PID start
     /// 4. Score: new sessions (match at line 0-4) score by delta alone;
     ///    resumed-by-other-PID sessions (mid-file match) get +1000 penalty
@@ -179,6 +324,18 @@ enum AISessionDetector {
     static func resolveClaudeSessionId(pid: pid_t, workingDirectory: String?) -> ClaudeSessionInfo? {
         guard let cwd = workingDirectory, !cwd.isEmpty else { return nil }
         guard let startEpoch = processStartEpoch(pid: pid) else { return nil }
+
+        let cacheKey = PIDSessionCacheKey(pid: pid, startEpoch: startEpoch)
+        cacheLock.lock()
+        if let cached = pidSessionCache[cacheKey] {
+            cacheLock.unlock()
+            return ClaudeSessionInfo(
+                sessionId: cached.sessionId ?? "",
+                projectPath: cached.projectPath,
+                score: 0
+            )
+        }
+        cacheLock.unlock()
 
         let claudeBase = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
@@ -234,11 +391,21 @@ enum AISessionDetector {
         // Read project path from the index if available
         let projectPath = readProjectPath(from: projectDir)
 
-        return ClaudeSessionInfo(
+        // Cache the result keyed by PID
+        let result = ClaudeSessionInfo(
             sessionId: best.sessionId,
             projectPath: projectPath,
             score: best.score
         )
+        cacheLock.lock()
+        pidSessionCache = pidSessionCache.filter { $0.key.pid != pid }
+        pidSessionCache[cacheKey] = CachedPIDSession(
+            sessionId: result.sessionId,
+            projectPath: result.projectPath
+        )
+        cacheLock.unlock()
+
+        return result
     }
 
     // MARK: - JSONL Entry Scanning
@@ -251,12 +418,14 @@ enum AISessionDetector {
 
     /// Scans a .jsonl file for the first entry with a timestamp >= the given epoch.
     /// Returns the line number and time delta, or nil if no match found.
+    /// Individual lines longer than 32KB are skipped so pathological entries
+    /// cannot blow up string-search costs during scan.
     private static func findFirstEntryAfter(epoch: Int, inFile path: String) -> EntryMatch? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { handle.closeFile() }
 
-        // Read in chunks to avoid loading huge files entirely into memory
         let chunkSize = 64 * 1024
+        let maxLineLength = 32 * 1024
         var lineIndex = 0
         var remainder = ""
 
@@ -267,14 +436,23 @@ enum AISessionDetector {
             let text = remainder + (String(data: chunk, encoding: .utf8) ?? "")
             var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
 
-            // Last element might be incomplete if chunk didn't end on newline
             if chunk.count == chunkSize {
                 remainder = String(lines.removeLast())
+                // Prevent remainder from growing unboundedly
+                if remainder.count > maxLineLength {
+                    remainder = ""
+                }
             } else {
                 remainder = ""
             }
 
             for line in lines {
+                // Skip lines that are too long to avoid stack overflow in string search
+                guard line.count <= maxLineLength else {
+                    lineIndex += 1
+                    continue
+                }
+
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty {
                     lineIndex += 1

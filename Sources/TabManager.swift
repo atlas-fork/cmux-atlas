@@ -1230,8 +1230,8 @@ final class NotificationBurstCoalescer {
     }
 }
 
-struct RecentlyClosedBrowserStack {
-    private(set) var entries: [ClosedBrowserPanelRestoreSnapshot] = []
+struct RecentlyClosedPanelStack {
+    private(set) var entries: [ClosedPanelRestoreEntry] = []
     let capacity: Int
 
     init(capacity: Int) {
@@ -1242,15 +1242,25 @@ struct RecentlyClosedBrowserStack {
         entries.isEmpty
     }
 
-    mutating func push(_ snapshot: ClosedBrowserPanelRestoreSnapshot) {
-        entries.append(snapshot)
+    mutating func push(_ entry: ClosedPanelRestoreEntry) {
+        entries.append(entry)
         if entries.count > capacity {
             entries.removeFirst(entries.count - capacity)
         }
     }
 
-    mutating func pop() -> ClosedBrowserPanelRestoreSnapshot? {
+    mutating func pop() -> ClosedPanelRestoreEntry? {
         entries.popLast()
+    }
+
+    mutating func popMostRecentBrowser() -> ClosedBrowserPanelRestoreSnapshot? {
+        for index in entries.indices.reversed() {
+            if case .browser(let snapshot) = entries[index] {
+                entries.remove(at: index)
+                return snapshot
+            }
+        }
+        return nil
     }
 }
 
@@ -1467,6 +1477,7 @@ class TabManager: ObservableObject {
     weak var window: NSWindow?
 
     @Published var tabs: [Workspace] = []
+    @Published var organizationName: String?
     @Published private(set) var isWorkspaceCycleHot: Bool = false
     @Published private(set) var pendingBackgroundWorkspaceLoadIds: Set<UUID> = []
     @Published private(set) var debugPinnedWorkspaceLoadIds: Set<UUID> = []
@@ -1536,13 +1547,17 @@ class TabManager: ObservableObject {
                 if let selectedTabId = self.selectedTabId {
                     self.markFocusedPanelReadIfActive(tabId: selectedTabId)
                 }
-                // Sync external editor to the newly selected workspace's directory
-                if let workspace = self.selectedWorkspace {
+                // Sync external editor to the newly selected workspace's directory.
+                // Only trigger from the key window so multi-monitor setups don't
+                // open duplicate editor windows from inactive cmux windows.
+                if let workspace = self.selectedWorkspace,
+                   self.window?.isKeyWindow == true {
                     EditorSyncController.shared.workspaceDidChange(directory: workspace.currentDirectory)
                 }
                 // Keep the directory hook up to date for immediate-open
                 EditorSyncController.shared.currentWorkspaceDirectory = { [weak self] in
-                    self?.selectedWorkspace?.currentDirectory
+                    guard self?.window?.isKeyWindow == true else { return nil }
+                    return self?.selectedWorkspace?.currentDirectory
                 }
 #if DEBUG
                 let dtMs = self.debugWorkspaceSwitchStartTime > 0
@@ -1565,7 +1580,7 @@ class TabManager: ObservableObject {
     }
     private var pendingPanelTitleUpdates: [PanelTitleUpdateKey: String] = [:]
     private let panelTitleUpdateCoalescer = NotificationBurstCoalescer(delay: 1.0 / 30.0)
-    private var recentlyClosedBrowsers = RecentlyClosedBrowserStack(capacity: 20)
+    private var recentlyClosedPanels = RecentlyClosedPanelStack(capacity: 20)
     private let initialWorkspaceGitProbeQueue = DispatchQueue(
         label: "com.cmux.initial-workspace-git-probe",
         qos: .utility
@@ -1733,12 +1748,16 @@ class TabManager: ObservableObject {
 
     private func wireClosedBrowserTracking(for workspace: Workspace) {
         workspace.onClosedBrowserPanel = { [weak self] snapshot in
-            self?.recentlyClosedBrowsers.push(snapshot)
+            self?.recentlyClosedPanels.push(.browser(snapshot))
+        }
+        workspace.onClosedTerminalPanel = { [weak self] snapshot in
+            self?.recentlyClosedPanels.push(.terminal(snapshot))
         }
     }
 
     private func unwireClosedBrowserTracking(for workspace: Workspace) {
         workspace.onClosedBrowserPanel = nil
+        workspace.onClosedTerminalPanel = nil
     }
 
     var selectedWorkspace: Workspace? {
@@ -1923,7 +1942,7 @@ class TabManager: ObservableObject {
     }
 
     @discardableResult
-    func addWorkspaceFromSnapshot(_ snapshot: SessionWorkspaceSnapshot, organizationName: String? = nil, select: Bool = true) -> Workspace {
+    func addWorkspaceFromSnapshot(_ snapshot: SessionWorkspaceSnapshot, select: Bool = true) -> Workspace {
         let ordinal = Self.nextPortOrdinal
         Self.nextPortOrdinal += 1
         let workspace = Workspace(
@@ -1933,7 +1952,6 @@ class TabManager: ObservableObject {
         )
         workspace.owningTabManager = self
         workspace.restoreSessionSnapshot(snapshot)
-        workspace.setOrganizationName(organizationName ?? snapshot.organizationName)
         wireClosedBrowserTracking(for: workspace)
 
         let currentSnapshot = workspaceCreationSnapshot()
@@ -3053,7 +3071,6 @@ class TabManager: ObservableObject {
 
     func closeWorkspace(_ workspace: Workspace) {
         guard tabs.count > 1 else { return }
-        autoSaveOrganization(workspace)
         sentryBreadcrumb("workspace.close", data: ["tabCount": tabs.count - 1])
         clearWorkspaceGitProbes(workspaceId: workspace.id)
         sidebarSelectedWorkspaceIds.remove(workspace.id)
@@ -3233,35 +3250,41 @@ class TabManager: ObservableObject {
 #if DEBUG
         debugPrimeWorkspaceSwitchTrigger("select", to: workspace.id)
 #endif
-        // Auto-save the workspace we're switching away from
-        if let previous = tabs.first(where: { $0.id == selectedTabId }), previous.id != workspace.id {
-            autoSaveOrganization(previous)
-        }
         selectedTabId = workspace.id
     }
 
     // Keep selectTab as convenience alias
     func selectTab(_ tab: Workspace) { selectWorkspace(tab) }
 
-    // MARK: - Organization Auto-Save
+    // MARK: - Organization Management
 
-    private func autoSaveOrganization(_ workspace: Workspace) {
-        let name = workspace.organizationName
-            ?? (workspace.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? String(localized: "workspace.displayName.fallback", defaultValue: "Workspace")
-                : workspace.title)
-        let snapshot = workspace.sessionSnapshot(includeScrollback: false)
+    func switchToOrganization(_ org: WorkspaceOrganization) {
+        // Auto-save current organization before switching.
+        autoSaveCurrentOrganization()
+
+        restoreSessionSnapshot(org.tabManagerSnapshot)
+        organizationName = org.name
+        WorkspaceOrganizationStore.touchLastUsed(org.id)
+    }
+
+    func saveCurrentAsOrganization(name: String) {
+        let snapshot = sessionSnapshot(includeScrollback: false)
         let existing = WorkspaceOrganizationStore.loadAll()
         if existing.count >= WorkspaceOrganizationStore.maxOrganizations,
            existing.first(where: {
-               $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame &&
-               $0.snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines) ==
-                   snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+               $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame
            }) == nil,
            let oldest = existing.last {
             WorkspaceOrganizationStore.remove(oldest.id)
         }
-        _ = WorkspaceOrganizationStore.upsertAutomaticSnapshot(name: name, snapshot: snapshot)
+        _ = WorkspaceOrganizationStore.upsertAutomaticSnapshot(name: name, tabManagerSnapshot: snapshot)
+        organizationName = name
+    }
+
+    func autoSaveCurrentOrganization() {
+        guard let name = organizationName, !name.isEmpty else { return }
+        let snapshot = sessionSnapshot(includeScrollback: false)
+        _ = WorkspaceOrganizationStore.upsertAutomaticSnapshot(name: name, tabManagerSnapshot: snapshot)
     }
 
     private func confirmClose(title: String, message: String, acceptCmdD: Bool) -> Bool {
@@ -4485,11 +4508,59 @@ class TabManager: ObservableObject {
         )
     }
 
-    /// Reopen the most recently closed browser panel (Cmd+Shift+T).
-    /// No-op when no browser panel restore snapshot is available.
+    /// Reopen the most recently closed panel (Cmd+Shift+T).
+    /// Handles both browser panels and terminal panels with AI sessions.
+    @discardableResult
+    func reopenMostRecentlyClosedPanel() -> Bool {
+        while let entry = recentlyClosedPanels.pop() {
+            switch entry {
+            case .browser(let snapshot):
+                guard let targetWorkspace =
+                    tabs.first(where: { $0.id == snapshot.workspaceId })
+                    ?? selectedWorkspace
+                    ?? tabs.first else {
+                    return false
+                }
+                let preReopenFocusedPanelId = focusedPanelId(for: targetWorkspace.id)
+
+                if selectedTabId != targetWorkspace.id {
+                    selectedTabId = targetWorkspace.id
+                }
+
+                if let reopenedPanelId = reopenClosedBrowserPanel(snapshot, in: targetWorkspace) {
+                    enforceReopenedBrowserFocus(
+                        tabId: targetWorkspace.id,
+                        reopenedPanelId: reopenedPanelId,
+                        preReopenFocusedPanelId: preReopenFocusedPanelId
+                    )
+                    return true
+                }
+
+            case .terminal(let snapshot):
+                guard let targetWorkspace =
+                    tabs.first(where: { $0.id == snapshot.workspaceId })
+                    ?? selectedWorkspace
+                    ?? tabs.first else {
+                    return false
+                }
+
+                if selectedTabId != targetWorkspace.id {
+                    selectedTabId = targetWorkspace.id
+                }
+
+                if reopenClosedTerminalPanel(snapshot, in: targetWorkspace) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    /// Reopen the most recently closed browser panel.
     @discardableResult
     func reopenMostRecentlyClosedBrowserPanel() -> Bool {
-        while let snapshot = recentlyClosedBrowsers.pop() {
+        while let snapshot = recentlyClosedPanels.popMostRecentBrowser() {
             guard let targetWorkspace =
                 tabs.first(where: { $0.id == snapshot.workspaceId })
                 ?? selectedWorkspace
@@ -4513,6 +4584,41 @@ class TabManager: ObservableObject {
         }
 
         return false
+    }
+
+    private func reopenClosedTerminalPanel(
+        _ snapshot: ClosedTerminalPanelRestoreSnapshot,
+        in workspace: Workspace
+    ) -> Bool {
+        let paneId: UUID
+        if workspace.bonsplitController.allPaneIds.contains(where: { $0.id == snapshot.originalPaneId }) {
+            paneId = snapshot.originalPaneId
+        } else if let focusedPane = workspace.bonsplitController.focusedPaneId {
+            paneId = focusedPane.id
+        } else {
+            return false
+        }
+
+        guard let terminalPanel = workspace.newTerminalSurface(
+            inPane: PaneID(id: paneId),
+            focus: true,
+            workingDirectory: snapshot.workingDirectory
+        ) else {
+            return false
+        }
+
+        let permissiveModeEnabled: Bool
+        switch snapshot.restoredTerminalAction.agentType {
+        case .claudeCode:
+            permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .claudeCode)
+        case .codex:
+            permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .codex)
+        }
+        if let command = snapshot.restoredTerminalAction.resumeCommand(permissiveModeEnabled: permissiveModeEnabled) {
+            terminalPanel.sendCommand(command)
+        }
+
+        return true
     }
 
     private func enforceReopenedBrowserFocus(
@@ -5944,7 +6050,7 @@ extension TabManager {
         workspaceCycleCooldownTask = nil
         isWorkspaceCycleHot = false
         selectionSideEffectsGeneration &+= 1
-        recentlyClosedBrowsers = RecentlyClosedBrowserStack(capacity: 20)
+        recentlyClosedPanels = RecentlyClosedPanelStack(capacity: 20)
 
         // Build the new workspace list locally to avoid intermediate @Published
         // emissions (empty tabs, nil selectedTabId) that can leave SwiftUI's

@@ -204,36 +204,52 @@ git commit -m "Update ghostty submodule"
 
 ## Release
 
-Use the `/release` command to prepare a new release. This will:
-1. Determine the new version (bumps minor by default)
-2. Gather commits since the last tag and update the changelog
-3. Update `CHANGELOG.md` (the docs changelog page at `web/app/docs/changelog/page.tsx` reads from it)
-4. Run `./scripts/bump-version.sh` to update both versions
-5. Commit, tag, and push
+Use the `/release` command to prepare a new fork release.
 
-Version bumping:
+### Fork versioning scheme
+
+`MARKETING_VERSION` stays aligned with upstream (manaflow-ai/cmux). Fork releases use atlas tags:
+
+```
+v{upstream-version}-atlas.{N}
+```
+
+Examples: `v0.62.2-atlas.1`, `v0.62.2-atlas.2`, `v0.63.0-atlas.1`
+
+When upstream bumps their version and we sync, reset the atlas suffix to `.1`.
+
+### Version bumping
 
 ```bash
-./scripts/bump-version.sh          # bump minor (0.15.0 → 0.16.0)
-./scripts/bump-version.sh patch    # bump patch (0.15.0 → 0.15.1)
-./scripts/bump-version.sh major    # bump major (0.15.0 → 1.0.0)
+./scripts/bump-version.sh build    # bump build number only (fork releases)
+./scripts/bump-version.sh          # bump minor (only when syncing upstream version bump)
+./scripts/bump-version.sh patch    # bump patch
+./scripts/bump-version.sh major    # bump major
 ./scripts/bump-version.sh 1.0.0    # set specific version
 ```
 
-This updates both `MARKETING_VERSION` and `CURRENT_PROJECT_VERSION` (build number). The build number is auto-incremented and is required for Sparkle auto-update to work.
+For fork releases, always use `build` to keep `MARKETING_VERSION` aligned with upstream. The build number (`CURRENT_PROJECT_VERSION`) is what Sparkle uses to detect updates.
 
-Manual release steps (if not using the command):
+### Release steps
 
 ```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
-gh run watch --repo manaflow-ai/cmux
+# 1. Bump build number
+./scripts/bump-version.sh build
+
+# 2. Update CHANGELOG.md
+
+# 3. Commit, tag, push
+git add -A && git commit -m "release: v0.62.2-atlas.2"
+git tag v0.62.2-atlas.2
+git push origin main --tags
+
+# 4. Monitor
+gh run watch --repo atlascodesai/cmux-atlas
 ```
 
 Notes:
 - Requires GitHub secrets: `APPLE_CERTIFICATE_BASE64`, `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`.
 - The release asset is `cmux-macos.dmg` attached to the tag.
-- README download button points to `releases/latest/download/cmux-macos.dmg`.
-- Versioning: bump the minor version for updates unless explicitly asked otherwise.
-- Changelog: update `CHANGELOG.md`; docs changelog is rendered from it.
+- Sparkle appcast: `https://github.com/atlascodesai/cmux-atlas/releases/latest/download/appcast.xml`
+- Changelog: update `CHANGELOG.md` with user-facing changes only.

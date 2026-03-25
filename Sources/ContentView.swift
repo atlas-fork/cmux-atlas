@@ -2273,7 +2273,7 @@ struct ContentView: View {
         if titlebarText != title {
             titlebarText = title
         }
-        let orgName = tab.organizationName
+        let orgName = tabManager.organizationName
         if titlebarOrgName != orgName {
             titlebarOrgName = orgName
         }
@@ -4942,7 +4942,7 @@ struct ContentView: View {
             return "⌘W"
         case "palette.closeWorkspace":
             return "⌘⇧W"
-        case "palette.reopenClosedBrowserTab":
+        case "palette.reopenClosedPanel":
             return "⌘⇧T"
         case "palette.openSettings":
             return "⌘,"
@@ -5171,11 +5171,11 @@ struct ContentView: View {
         )
         contributions.append(
             CommandPaletteCommandContribution(
-                commandId: "palette.reopenClosedBrowserTab",
-                title: constant(String(localized: "command.reopenClosedBrowserTab.title", defaultValue: "Reopen Closed Browser Tab")),
-                subtitle: constant(String(localized: "command.reopenClosedBrowserTab.subtitle", defaultValue: "Browser")),
+                commandId: "palette.reopenClosedPanel",
+                title: constant(String(localized: "menu.file.reopenClosedPanel", defaultValue: "Reopen Closed Panel")),
+                subtitle: constant(String(localized: "command.reopenClosedPanel.subtitle", defaultValue: "Panels")),
                 shortcutHint: "⌘⇧T",
-                keywords: ["reopen", "closed", "browser"]
+                keywords: ["reopen", "closed", "panel", "browser", "terminal"]
             )
         )
         contributions.append(
@@ -5817,8 +5817,8 @@ struct ContentView: View {
             }
             window.toggleFullScreen(nil)
         }
-        registry.register(commandId: "palette.reopenClosedBrowserTab") {
-            _ = tabManager.reopenMostRecentlyClosedBrowserPanel()
+        registry.register(commandId: "palette.reopenClosedPanel") {
+            _ = tabManager.reopenMostRecentlyClosedPanel()
         }
         registry.register(commandId: "palette.toggleSidebar") {
             sidebarState.toggle()
@@ -11218,7 +11218,7 @@ private struct TabItemView: View, Equatable {
         }()
 
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 if unreadCount > 0 {
                     ZStack {
                         Circle()
@@ -11244,8 +11244,12 @@ private struct TabItemView: View, Equatable {
                     .truncationMode(.tail)
                     .layoutPriority(1)
 
+                Spacer(minLength: 0)
+
                 if let workspaceMemorySummary {
                     Text(workspaceMemorySummary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: true)
                         .font(.system(size: 9.5, weight: .semibold, design: .rounded))
                         .monospacedDigit()
                         .foregroundColor(activeSecondaryColor(0.82))
@@ -11260,8 +11264,6 @@ private struct TabItemView: View, Equatable {
                                 )
                         )
                 }
-
-                Spacer(minLength: 0)
 
                 ZStack(alignment: .trailing) {
                     Button(action: {
@@ -11794,37 +11796,30 @@ private struct TabItemView: View, Equatable {
             alert.addButton(withTitle: String(localized: "organization.name.save", defaultValue: "Save"))
             alert.addButton(withTitle: String(localized: "organization.name.cancel", defaultValue: "Cancel"))
             let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-            input.stringValue = tab.organizationName ?? favName
+            input.stringValue = tabManager.organizationName ?? favName
             alert.accessoryView = input
             alert.window.initialFirstResponder = input
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !newName.isEmpty else { return }
-            tab.setOrganizationName(newName)
+            tabManager.organizationName = newName
         }
 
         Button(String(localized: "contextMenu.saveAsOrganization", defaultValue: "Save as Organization")) {
-            let orgName = tab.organizationName ?? favName
-            let snapshot = tab.sessionSnapshot(includeScrollback: false)
-            let org = WorkspaceOrganization(name: orgName, snapshot: snapshot)
-            let orgs = WorkspaceOrganizationStore.loadAll()
-            if orgs.count >= WorkspaceOrganizationStore.maxOrganizations {
-                if let oldest = orgs.last {
-                    WorkspaceOrganizationStore.remove(oldest.id)
-                }
-            }
-            WorkspaceOrganizationStore.save(org)
+            let name = tabManager.organizationName ?? favName
+            let snapshot = tabManager.sessionSnapshot(includeScrollback: false)
+            _ = WorkspaceOrganizationStore.upsertAutomaticSnapshot(name: name, tabManagerSnapshot: snapshot)
         }
 
         Button(String(localized: "contextMenu.exportOrganization", defaultValue: "Export Organization…")) {
-            let orgName = tab.organizationName ?? favName
-            let snapshot = tab.sessionSnapshot(includeScrollback: true)
-            WorkspaceOrganizationStore.exportWorkspace(snapshot, name: orgName)
+            let name = tabManager.organizationName ?? favName
+            let snapshot = tabManager.sessionSnapshot(includeScrollback: true)
+            WorkspaceOrganizationStore.exportOrganization(snapshot, name: name)
         }
 
         Button(String(localized: "contextMenu.importOrganization", defaultValue: "Import Organization…")) {
             if let org = WorkspaceOrganizationStore.importWorkspace() {
-                tabManager.addWorkspaceFromSnapshot(org.snapshot, organizationName: org.name)
+                tabManager.switchToOrganization(org)
             }
         }
 

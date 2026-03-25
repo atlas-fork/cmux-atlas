@@ -10352,6 +10352,11 @@ struct CMUXCLI {
                     pid: claudePid
                 )
             }
+            // Clear any lingering resume banner from a previous session in this tab.
+            _ = try? sendV1Command(
+                "clear_session_resume --tab=\(workspaceId) --surface=\(surfaceId)",
+                client: client
+            )
             // Register PID for stale-session detection and OSC suppression,
             // but don't set a visible status. "Running" only appears when the
             // user submits a prompt (UserPromptSubmit) or Claude starts working
@@ -10490,6 +10495,23 @@ struct CMUXCLI {
             // Only clear when we are the primary cleanup path (Stop didn't fire first).
             // If Stop already consumed the session, consumedSession is nil and we skip
             // to avoid wiping the completion notification that Stop just delivered.
+
+            // Before consuming, look up session info so we can show the resume banner.
+            // This lets the user resume the session from within the same tab.
+            if let sessionId = parsedInput.sessionId, !sessionId.isEmpty {
+                let record = try? sessionStore.lookup(sessionId: sessionId)
+                let resolvedWorkspace = record?.workspaceId ?? fallbackWorkspaceId
+                let resolvedSurface = record?.surfaceId ?? fallbackSurfaceId
+                var resumeArgs = "\(sessionId) --tab=\(resolvedWorkspace)"
+                if let surface = resolvedSurface, !surface.isEmpty {
+                    resumeArgs += " --surface=\(surface)"
+                }
+                if let cwd = parsedInput.cwd, !cwd.isEmpty {
+                    resumeArgs += " --cwd=\(cwd)"
+                }
+                _ = try? sendV1Command("show_session_resume \(resumeArgs)", client: client)
+            }
+
             let consumedSession = try? sessionStore.consume(
                 sessionId: parsedInput.sessionId,
                 workspaceId: fallbackWorkspaceId,
@@ -10617,6 +10639,11 @@ struct CMUXCLI {
                 permissionMode: parsedInput.permissionMode,
                 source: parsedInput.source
             )
+            // Clear any lingering resume banner from a previous session.
+            _ = try? sendV1Command(
+                "clear_session_resume --tab=\(workspaceId) --surface=\(surfaceId)",
+                client: client
+            )
             print("{\"continue\":true}")
 
         case "stop", "idle":
@@ -10641,6 +10668,12 @@ struct CMUXCLI {
                 permissionMode: parsedInput.permissionMode ?? existingRecord?.permissionMode,
                 source: parsedInput.source ?? existingRecord?.source
             )
+            // Show resume banner so the user can resume the codex session from this tab.
+            var resumeArgs = "\(sessionId) --tab=\(workspaceId) --surface=\(resolvedSurfaceId) --agent=codex"
+            if let cwd = parsedInput.cwd ?? existingRecord?.cwd, !cwd.isEmpty {
+                resumeArgs += " --cwd=\(cwd)"
+            }
+            _ = try? sendV1Command("show_session_resume \(resumeArgs)", client: client)
             print("{\"continue\":true}")
 
         case "help", "--help", "-h":

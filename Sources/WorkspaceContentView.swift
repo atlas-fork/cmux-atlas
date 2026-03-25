@@ -96,26 +96,7 @@ struct WorkspaceContentView: View {
                         guard workspace.panels[panel.id] != nil else { return }
                         workspace.focusPanel(panel.id)
                     },
-                    onTriggerFlash: { workspace.triggerDebugFlash(panelId: panel.id) },
-                    restoredTerminalAction: workspace.restoredTerminalActions[panel.id],
-                    onRunRestoredTerminalAction: { restoredAction in
-                        let permissiveModeEnabled: Bool
-                        switch restoredAction.agentType {
-                        case .claudeCode:
-                            permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .claudeCode)
-                        case .codex:
-                            permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .codex)
-                        }
-                        guard let resumeCommand = restoredAction.resumeCommand(
-                                permissiveModeEnabled: permissiveModeEnabled
-                              ),
-                              let terminalPanel = panel as? TerminalPanel else { return }
-                        terminalPanel.sendCommand(resumeCommand)
-                        workspace.restoredTerminalActions.removeValue(forKey: panel.id)
-                    },
-                    onDismissRestoredTerminalAction: {
-                        workspace.restoredTerminalActions.removeValue(forKey: panel.id)
-                    }
+                    onTriggerFlash: { workspace.triggerDebugFlash(panelId: panel.id) }
                 )
                 .onTapGesture {
                     workspace.bonsplitController.focusPane(paneId)

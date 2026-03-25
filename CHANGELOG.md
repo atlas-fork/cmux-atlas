@@ -2,6 +2,18 @@
 
 All notable changes to cmux are documented here.
 
+## [0.62.2-atlas.2] - 2026-03-25
+
+### Fixed
+- Fix production crashes and high memory/CPU usage from AI session detection scanning large JSONL files
+- AI session resume now pre-populates the terminal input instead of showing an overlay banner
+
+### Added
+- Cmd+Shift+T restores closed terminal tabs with AI session auto-resume
+
+### Changed
+- AI session detection poll interval reduced from 4s to 12s for lower background resource usage
+
 ## [0.62.2] - 2026-03-14
 
 ### Added

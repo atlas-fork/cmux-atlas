@@ -611,12 +611,49 @@ struct cmuxApp: App {
                 Menu(String(localized: "menu.file.organizations", defaultValue: "Organizations")) {
                     let orgs = WorkspaceOrganizationStore.loadAll()
 
+                    Button(String(localized: "menu.file.organizations.saveCurrent", defaultValue: "Save Current as Organization…")) {
+                        let alert = NSAlert()
+                        alert.messageText = String(localized: "organization.save.title", defaultValue: "Save Organization")
+                        alert.informativeText = String(localized: "organization.save.message", defaultValue: "Enter a name for this organization. All current workspaces will be saved.")
+                        alert.addButton(withTitle: String(localized: "organization.name.save", defaultValue: "Save"))
+                        alert.addButton(withTitle: String(localized: "organization.name.cancel", defaultValue: "Cancel"))
+                        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+                        input.stringValue = activeTabManager.organizationName ?? ""
+                        alert.accessoryView = input
+                        alert.window.initialFirstResponder = input
+                        guard alert.runModal() == .alertFirstButtonReturn else { return }
+                        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !newName.isEmpty else { return }
+                        activeTabManager.saveCurrentAsOrganization(name: newName)
+                    }
+
+                    Button(String(localized: "menu.file.organizations.exportCurrent", defaultValue: "Export Organization…")) {
+                        let name = activeTabManager.organizationName ?? "Organization"
+                        let snapshot = activeTabManager.sessionSnapshot(includeScrollback: true)
+                        WorkspaceOrganizationStore.exportOrganization(snapshot, name: name)
+                    }
+
+                    Button(String(localized: "menu.file.organizations.import", defaultValue: "Import Organization…")) {
+                        if let org = WorkspaceOrganizationStore.importWorkspace() {
+                            activeTabManager.switchToOrganization(org)
+                        }
+                    }
+
                     if !orgs.isEmpty {
+                        Divider()
+
                         let recentOrgs = Array(orgs.prefix(5))
                         ForEach(Array(recentOrgs.enumerated()), id: \.element.id) { index, org in
-                            Button(org.name) {
-                                WorkspaceOrganizationStore.touchLastUsed(org.id)
-                                activeTabManager.addWorkspaceFromSnapshot(org.snapshot, organizationName: org.name)
+                            Button {
+                                activeTabManager.switchToOrganization(org)
+                            } label: {
+                                HStack {
+                                    Text(org.name)
+                                    if activeTabManager.organizationName == org.name {
+                                        Spacer()
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
                             }
                             .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: [.control])
                         }
@@ -625,8 +662,7 @@ struct cmuxApp: App {
                             Menu(String(localized: "menu.file.organizations.more", defaultValue: "More…")) {
                                 ForEach(orgs.dropFirst(5), id: \.id) { org in
                                     Button(org.name) {
-                                        WorkspaceOrganizationStore.touchLastUsed(org.id)
-                                        activeTabManager.addWorkspaceFromSnapshot(org.snapshot, organizationName: org.name)
+                                        activeTabManager.switchToOrganization(org)
                                     }
                                 }
                             }
@@ -643,17 +679,6 @@ struct cmuxApp: App {
                                     WorkspaceOrganizationStore.remove(org.id)
                                 }
                             }
-                        }
-                    } else {
-                        Text(String(localized: "menu.file.organizations.empty", defaultValue: "No saved organizations"))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Divider()
-
-                    Button(String(localized: "menu.file.organizations.import", defaultValue: "Import Organization…")) {
-                        if let org = WorkspaceOrganizationStore.importWorkspace() {
-                            activeTabManager.addWorkspaceFromSnapshot(org.snapshot, organizationName: org.name)
                         }
                     }
                 }
@@ -701,8 +726,8 @@ struct cmuxApp: App {
                     workspaceCommandMenuContent(manager: activeTabManager)
                 }
 
-                Button(String(localized: "menu.file.reopenClosedBrowserPanel", defaultValue: "Reopen Closed Browser Panel")) {
-                    _ = activeTabManager.reopenMostRecentlyClosedBrowserPanel()
+                Button(String(localized: "menu.file.reopenClosedPanel", defaultValue: "Reopen Closed Panel")) {
+                    _ = activeTabManager.reopenMostRecentlyClosedPanel()
                 }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
             }

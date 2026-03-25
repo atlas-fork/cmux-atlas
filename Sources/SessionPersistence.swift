@@ -581,7 +581,6 @@ indirect enum SessionWorkspaceLayoutSnapshot: Codable, Sendable {
 struct SessionWorkspaceSnapshot: Codable, Sendable {
     var processTitle: String
     var customTitle: String?
-    var organizationName: String?
     var customColor: String?
     var isPinned: Bool
     var currentDirectory: String
@@ -684,20 +683,51 @@ struct WorkspaceOrganization: Codable, Identifiable {
     var name: String
     var savedAt: TimeInterval
     var lastUsedAt: TimeInterval
-    var snapshot: SessionWorkspaceSnapshot
+    var tabManagerSnapshot: SessionTabManagerSnapshot
 
-    init(name: String, snapshot: SessionWorkspaceSnapshot) {
+    /// Legacy key used for decoding v1 files that stored a single workspace snapshot.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, savedAt, lastUsedAt, tabManagerSnapshot, snapshot
+    }
+
+    init(name: String, tabManagerSnapshot: SessionTabManagerSnapshot) {
         self.id = UUID()
         self.name = name
         let now = Date().timeIntervalSinceReferenceDate
         self.savedAt = now
         self.lastUsedAt = now
-        self.snapshot = snapshot
+        self.tabManagerSnapshot = tabManagerSnapshot
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        savedAt = try container.decode(TimeInterval.self, forKey: .savedAt)
+        lastUsedAt = try container.decode(TimeInterval.self, forKey: .lastUsedAt)
+
+        // Try new format first, fall back to v1 single-workspace format.
+        if let tms = try? container.decode(SessionTabManagerSnapshot.self, forKey: .tabManagerSnapshot) {
+            tabManagerSnapshot = tms
+        } else if let single = try? container.decode(SessionWorkspaceSnapshot.self, forKey: .snapshot) {
+            tabManagerSnapshot = SessionTabManagerSnapshot(selectedWorkspaceIndex: 0, workspaces: [single])
+        } else {
+            throw DecodingError.dataCorruptedError(forKey: .tabManagerSnapshot, in: container, debugDescription: "Missing tabManagerSnapshot or legacy snapshot")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encode(savedAt, forKey: .savedAt)
+        try container.encode(lastUsedAt, forKey: .lastUsedAt)
+        try container.encode(tabManagerSnapshot, forKey: .tabManagerSnapshot)
     }
 }
 
 struct WorkspaceExportEnvelope: Codable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version: Int
     var exportedAt: TimeInterval
@@ -774,14 +804,12 @@ enum WorkspaceOrganizationStore {
     }
 
     @discardableResult
-    static func upsertAutomaticSnapshot(name: String, snapshot: SessionWorkspaceSnapshot) -> Bool {
+    static func upsertAutomaticSnapshot(name: String, tabManagerSnapshot: SessionTabManagerSnapshot) -> Bool {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return false }
 
-        let normalizedDirectory = snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         let existing = loadAll().first {
-            $0.name.localizedCaseInsensitiveCompare(trimmedName) == .orderedSame &&
-            $0.snapshot.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedDirectory
+            $0.name.localizedCaseInsensitiveCompare(trimmedName) == .orderedSame
         }
 
         let now = Date().timeIntervalSinceReferenceDate
@@ -789,11 +817,11 @@ enum WorkspaceOrganizationStore {
             existing.name = trimmedName
             existing.savedAt = now
             existing.lastUsedAt = now
-            existing.snapshot = snapshot
+            existing.tabManagerSnapshot = tabManagerSnapshot
             return save(existing)
         }
 
-        return save(WorkspaceOrganization(name: trimmedName, snapshot: snapshot))
+        return save(WorkspaceOrganization(name: trimmedName, tabManagerSnapshot: tabManagerSnapshot))
     }
 
     static func touchLastUsed(_ organizationId: UUID) {
@@ -812,7 +840,7 @@ enum WorkspaceOrganizationStore {
         try? FileManager.default.removeItem(at: fileURL)
     }
 
-    static func exportWorkspace(_ snapshot: SessionWorkspaceSnapshot, name: String) {
+    static func exportOrganization(_ tabManagerSnapshot: SessionTabManagerSnapshot, name: String) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = sanitizedExportFilename(name)
         panel.allowedContentTypes = [workspaceExportType]
@@ -820,7 +848,7 @@ enum WorkspaceOrganizationStore {
         panel.title = String(localized: "organization.export.title", defaultValue: "Export Organization")
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        let wrapper = WorkspaceOrganization(name: name, snapshot: snapshot)
+        let wrapper = WorkspaceOrganization(name: name, tabManagerSnapshot: tabManagerSnapshot)
         guard let data = try? exportData(for: wrapper) else {
             showImportExportError(title: String(localized: "organization.export.error.title", defaultValue: "Export Failed"), error: .writeFailed)
             return
@@ -876,9 +904,11 @@ enum WorkspaceOrganizationStore {
         let decoder = JSONDecoder()
 
         if let envelope = try? decoder.decode(WorkspaceExportEnvelope.self, from: data) {
-            guard envelope.version == WorkspaceExportEnvelope.currentVersion else {
+            guard envelope.version <= WorkspaceExportEnvelope.currentVersion else {
                 throw WorkspaceImportError.unsupportedFormat
             }
+            // v1 envelopes with a single-workspace snapshot are automatically
+            // migrated by WorkspaceOrganization's custom Decodable init.
             return envelope.organization
         }
 

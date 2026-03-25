@@ -429,4 +429,109 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
             userInfo: [NSLocalizedDescriptionKey: "\(operation) failed: \(String(cString: strerror(errno)))"]
         )
     }
+
+    // MARK: - Session Resume Socket Commands
+
+    func testShowSessionResumePrePopulatesTerminalText() async throws {
+        let socketPath = makeSocketPath("show-resume")
+        let appDelegate = AppDelegate.shared ?? AppDelegate()
+        let manager = appDelegate.tabManager ?? TabManager()
+
+        let originalTabManager = appDelegate.tabManager
+        appDelegate.tabManager = manager
+
+        let workspace = manager.addWorkspace(select: true)
+        defer {
+            if manager.tabs.contains(where: { $0.id == workspace.id }) {
+                manager.closeWorkspace(workspace)
+            }
+            appDelegate.tabManager = originalTabManager
+        }
+
+        guard let panelId = workspace.focusedPanelId else {
+            XCTFail("Expected workspace with a focused panel")
+            return
+        }
+
+        TerminalController.shared.start(
+            tabManager: manager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        defer { TerminalController.shared.stop() }
+        try waitForSocket(at: socketPath)
+
+        let sessionId = "test-session-\(UUID().uuidString.prefix(8))"
+        let command = "show_session_resume \(sessionId) --tab=\(workspace.id.uuidString) --surface=\(panelId.uuidString) --cwd=/tmp/test-project"
+        let responses = try sendCommands([command], to: socketPath)
+        XCTAssertEqual(responses.first, "OK")
+    }
+
+    func testShowSessionResumeWithCodexAgent() async throws {
+        let socketPath = makeSocketPath("resume-codex")
+        let appDelegate = AppDelegate.shared ?? AppDelegate()
+        let manager = appDelegate.tabManager ?? TabManager()
+
+        let originalTabManager = appDelegate.tabManager
+        appDelegate.tabManager = manager
+
+        let workspace = manager.addWorkspace(select: true)
+        defer {
+            if manager.tabs.contains(where: { $0.id == workspace.id }) {
+                manager.closeWorkspace(workspace)
+            }
+            appDelegate.tabManager = originalTabManager
+        }
+
+        guard let panelId = workspace.focusedPanelId else {
+            XCTFail("Expected workspace with a focused panel")
+            return
+        }
+
+        TerminalController.shared.start(
+            tabManager: manager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        defer { TerminalController.shared.stop() }
+        try waitForSocket(at: socketPath)
+
+        let sessionId = "codex-session-\(UUID().uuidString.prefix(8))"
+        let command = "show_session_resume \(sessionId) --tab=\(workspace.id.uuidString) --surface=\(panelId.uuidString) --agent=codex --cwd=/tmp/codex-project"
+        let responses = try sendCommands([command], to: socketPath)
+        XCTAssertEqual(responses.first, "OK")
+    }
+
+    func testClearSessionResumeReturnsOK() throws {
+        let socketPath = makeSocketPath("clr-resume")
+        let manager = TabManager()
+
+        TerminalController.shared.start(
+            tabManager: manager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        defer { TerminalController.shared.stop() }
+        try waitForSocket(at: socketPath)
+
+        // clear_session_resume is now a no-op for backwards compatibility
+        let responses = try sendCommands(["clear_session_resume"], to: socketPath)
+        XCTAssertEqual(responses.first, "OK")
+    }
+
+    func testShowSessionResumeWithoutSessionIdReturnsError() throws {
+        let socketPath = makeSocketPath("no-session")
+        let manager = TabManager()
+
+        TerminalController.shared.start(
+            tabManager: manager,
+            socketPath: socketPath,
+            accessMode: .allowAll
+        )
+        defer { TerminalController.shared.stop() }
+        try waitForSocket(at: socketPath)
+
+        let responses = try sendCommands(["show_session_resume"], to: socketPath)
+        XCTAssertTrue(responses.first?.hasPrefix("ERROR:") == true, "Expected error for missing session_id")
+    }
 }

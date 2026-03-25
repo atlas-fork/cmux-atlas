@@ -1716,6 +1716,12 @@ class TerminalController {
         case "clear_agent_pid":
             return clearAgentPID(args)
 
+        case "show_session_resume":
+            return showSessionResume(args)
+
+        case "clear_session_resume":
+            return clearSessionResume(args)
+
         case "clear_meta":
             return clearMeta(args)
 
@@ -10829,6 +10835,8 @@ class TerminalController {
           list_log [--limit=N] [--tab=X] - List log entries
           set_progress <0.0-1.0> [--label=X] [--tab=X] - Set progress bar
           clear_progress [--tab=X] - Clear progress bar
+          show_session_resume <session_id> [--tab=X] [--surface=Y] [--agent=claude_code|codex] [--cwd=<path>] - Show AI session resume banner
+          clear_session_resume [--tab=X] [--surface=Y] - Clear AI session resume banner
           report_git_branch <branch> [--status=dirty] [--tab=X] [--panel=Y] - Report git branch
           clear_git_branch [--tab=X] [--panel=Y] - Clear git branch
           report_pr <number> <url> [--label=PR] [--state=open|merged|closed] [--branch=<name>] [--checks=pass|fail|pending] [--tab=X] [--panel=Y] - Report pull request / review item
@@ -14159,6 +14167,68 @@ class TerminalController {
             guard let self, let tab = self.tabForSidebarMutation(id: targetTabId) else { return }
             tab.agentPIDs[key] = pid
         }
+        return "OK"
+    }
+
+    /// Show a session resume banner for a terminal panel.
+    /// Usage: show_session_resume <session_id> [--tab=<id>] [--surface=<id>] [--agent=claude_code|codex] [--cwd=<path>] [--project=<path>]
+    private func showSessionResume(_ args: String) -> String {
+        let parsed = parseOptions(args)
+        guard let sessionId = parsed.positional.first, !sessionId.isEmpty else {
+            return "ERROR: Usage: show_session_resume <session_id> [--tab=<id>] [--surface=<id>] [--agent=claude_code|codex] [--cwd=<path>]"
+        }
+
+        let agentType: AIAgentType
+        switch parsed.options["agent"]?.lowercased() {
+        case "codex":
+            agentType = .codex
+        default:
+            agentType = .claudeCode
+        }
+
+        let cwd = parsed.options["cwd"]
+        let project = parsed.options["project"] ?? cwd
+
+        let snapshot = RestoredTerminalActionSnapshot(
+            agentType: agentType,
+            sessionId: sessionId,
+            workingDirectory: cwd,
+            projectPath: project,
+            lastSeenActive: Date().timeIntervalSince1970
+        )
+
+        let tabResolution = resolveTabIdForSidebarMutation(reportArgs: args, options: parsed.options)
+        guard let targetTabId = tabResolution.tabId else {
+            return tabResolution.error ?? "ERROR: No tab selected"
+        }
+
+        let surfaceIdStr = parsed.options["surface"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let surfaceId = surfaceIdStr.flatMap { UUID(uuidString: $0) }
+
+        let permissiveModeEnabled: Bool
+        switch agentType {
+        case .claudeCode:
+            permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .claudeCode)
+        case .codex:
+            permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .codex)
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let tab = self.tabForSidebarMutation(id: targetTabId) else { return }
+            let panelId = surfaceId ?? tab.focusedPanelId
+            guard let panelId, let terminalPanel = tab.panels[panelId] as? TerminalPanel else { return }
+            if let command = snapshot.resumeCommand(permissiveModeEnabled: permissiveModeEnabled) {
+                terminalPanel.sendText(command)
+            }
+        }
+        return "OK"
+    }
+
+    /// Clear the session resume (no-op, kept for CLI compatibility).
+    /// Usage: clear_session_resume [--tab=<id>] [--surface=<id>]
+    private func clearSessionResume(_ args: String) -> String {
+        // No-op: resume is now pre-populated text, not a banner.
+        // Kept for backwards compatibility with existing CLI integrations.
         return "OK"
     }
 

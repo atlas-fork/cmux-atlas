@@ -2168,7 +2168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private static let commandPaletteRequestGraceInterval: TimeInterval = 1.25
     private static let commandPalettePendingOpenMaxAge: TimeInterval = 8.0
     private static let sessionAutosaveTypingQuietPeriod: TimeInterval = 0.65
-    private static let aiSessionCacheRefreshInterval: DispatchTimeInterval = .seconds(4)
+    private static let aiSessionCacheRefreshInterval: DispatchTimeInterval = .seconds(12)
 
     var updateViewModel: UpdateViewModel {
         updateController.viewModel
