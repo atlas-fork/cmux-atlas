@@ -382,7 +382,7 @@ jobs:
             if [ -f "$HELPER_PATH" ]; then
               /usr/bin/codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" --entitlements "$ENTITLEMENTS" "$HELPER_PATH"
             fi
-            # Sign Sparkle XPC services/helpers WITHOUT app entitlements to avoid error 4005
+            # Sign Sparkle internals without app entitlements
             SPARKLE_FW="$APP_PATH/Contents/Frameworks/Sparkle.framework"
             if [ -d "$SPARKLE_FW" ]; then
               for xpc in "$SPARKLE_FW/Versions/B/XPCServices/"*.xpc; do
@@ -391,6 +391,14 @@ jobs:
               [ -d "$SPARKLE_FW/Versions/B/Updater.app" ] && /usr/bin/codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$SPARKLE_FW/Versions/B/Updater.app"
               [ -f "$SPARKLE_FW/Versions/B/Autoupdate" ] && /usr/bin/codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$SPARKLE_FW/Versions/B/Autoupdate"
               /usr/bin/codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$SPARKLE_FW"
+            fi
+            # Sign all other frameworks/bundles/dylibs without app entitlements
+            FRAMEWORKS_DIR="$APP_PATH/Contents/Frameworks"
+            if [ -d "$FRAMEWORKS_DIR" ]; then
+              find "$FRAMEWORKS_DIR" -mindepth 1 -maxdepth 1 \( -name '*.framework' -o -name '*.bundle' -o -name '*.dylib' \) -print | sort | while IFS= read -r dep; do
+                [ "$dep" = "$SPARKLE_FW" ] && continue
+                /usr/bin/codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$dep"
+              done
             fi
             # Sign main app last with app entitlements (NO --deep)
             /usr/bin/codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" --entitlements "$ENTITLEMENTS" "$APP_PATH"
