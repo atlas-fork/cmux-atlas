@@ -25,6 +25,8 @@ final class EditorSyncController: ObservableObject {
         var homeDirectoryPath: String
         var isExecutableFileAtPath: (String) -> Bool
         var applicationURLForTarget: (TerminalDirectoryOpenTarget) -> URL?
+        var bundleIdentifierForTarget: (TerminalDirectoryOpenTarget) -> String?
+        var isApplicationRunning: (String) -> Bool
         var inheritedEnvironment: () -> [String: String]
         var sleep: (Duration) async -> Void
         var runCLI: (URL, [String], [String: String]) throws -> Void
@@ -34,6 +36,12 @@ final class EditorSyncController: ObservableObject {
             homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path,
             isExecutableFileAtPath: { FileManager.default.isExecutableFile(atPath: $0) },
             applicationURLForTarget: { $0.applicationURL() },
+            bundleIdentifierForTarget: { target in
+                target.applicationURL().flatMap { Bundle(url: $0)?.bundleIdentifier }
+            },
+            isApplicationRunning: { bundleIdentifier in
+                !NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier).isEmpty
+            },
             inheritedEnvironment: { ProcessInfo.processInfo.environment },
             sleep: { duration in
                 try? await Task.sleep(for: duration)
@@ -159,6 +167,29 @@ final class EditorSyncController: ObservableObject {
         openDirectoryInEditor(directory)
     }
 
+    /// Opens a file in the linked editor only when that editor is already running.
+    @discardableResult
+    func openFileInEditorIfRunning(
+        _ path: String,
+        line: Int? = nil,
+        column: Int? = nil
+    ) -> Bool {
+        guard isEnabled, isTargetEditorRunning() else { return false }
+        guard let cliArgs = fileCLICommand(for: targetEditor, path: path, line: line, column: column) else {
+            return false
+        }
+        launchCLI(cliArgs)
+        return true
+    }
+
+    func isTargetEditorRunning() -> Bool {
+        guard let bundleIdentifier = environment.bundleIdentifierForTarget(targetEditor),
+              !bundleIdentifier.isEmpty else {
+            return false
+        }
+        return environment.isApplicationRunning(bundleIdentifier)
+    }
+
     // MARK: - Editor Open (CLI-based, single window)
 
     /// Opens a directory in the configured external editor, reusing the existing window.
@@ -179,49 +210,96 @@ final class EditorSyncController: ObservableObject {
     /// Returns the CLI command + arguments to open a directory in the editor,
     /// reusing the existing window. Returns nil if no CLI is known for this editor.
     private func cliCommand(for editor: TerminalDirectoryOpenTarget, directory: String) -> [String]? {
+        guard let executable = cliExecutable(for: editor) else { return nil }
+        switch editor {
+        case .cursor, .vscode, .windsurf:
+            return [executable, "--reuse-window", directory]
+        case .zed:
+            return [executable, "--reuse", directory]
+        case .xcode:
+            return [executable, directory]
+        default:
+            return nil
+        }
+    }
+
+    private func fileCLICommand(
+        for editor: TerminalDirectoryOpenTarget,
+        path: String,
+        line: Int?,
+        column: Int?
+    ) -> [String]? {
+        guard let executable = cliExecutable(for: editor) else { return nil }
+        let positionedPath: String = {
+            guard let line else { return path }
+            guard let column else { return "\(path):\(line)" }
+            return "\(path):\(line):\(column)"
+        }()
+
+        switch editor {
+        case .cursor, .vscode, .windsurf:
+            if line != nil {
+                return [executable, "--reuse-window", "--goto", positionedPath]
+            }
+            return [executable, "--reuse-window", path]
+
+        case .zed:
+            return [executable, "--reuse", positionedPath]
+
+        case .xcode:
+            if let line {
+                return [executable, "--line", "\(line)", path]
+            }
+            return [executable, path]
+
+        default:
+            return nil
+        }
+    }
+
+    private func cliExecutable(for editor: TerminalDirectoryOpenTarget) -> String? {
         switch editor {
         case .cursor:
-            // Cursor CLI: same flags as VS Code
             if let cli = findCLI(names: ["cursor"]) {
-                return [cli, "--reuse-window", directory]
+                return cli
             }
-            // Cursor sometimes installs as 'code' in its own path
             if let appURL = environment.applicationURLForTarget(editor) {
                 let embeddedCLI = appURL.path + "/Contents/Resources/app/bin/code"
                 if environment.isExecutableFileAtPath(embeddedCLI) {
-                    return [embeddedCLI, "--reuse-window", directory]
+                    return embeddedCLI
                 }
             }
             return nil
 
         case .vscode:
             if let cli = findCLI(names: ["code"]) {
-                return [cli, "--reuse-window", directory]
+                return cli
             }
             if let appURL = environment.applicationURLForTarget(editor) {
                 let embeddedCLI = appURL.path + "/Contents/Resources/app/bin/code"
                 if environment.isExecutableFileAtPath(embeddedCLI) {
-                    return [embeddedCLI, "--reuse-window", directory]
+                    return embeddedCLI
                 }
             }
             return nil
 
         case .windsurf:
-            if let cli = findCLI(names: ["windsurf"]) {
-                return [cli, "--reuse-window", directory]
-            }
-            return nil
+            return findCLI(names: ["windsurf"])
 
         case .zed:
-            // Zed reuses the existing window by default
             if let cli = findCLI(names: ["zed"]) {
-                return [cli, directory]
+                return cli
+            }
+            if let appURL = environment.applicationURLForTarget(editor) {
+                let embeddedCLI = appURL.path + "/Contents/MacOS/cli"
+                if environment.isExecutableFileAtPath(embeddedCLI) {
+                    return embeddedCLI
+                }
             }
             return nil
 
         case .xcode:
-            // xed opens in Xcode; no --reuse-window but it reuses by default
-            return ["/usr/bin/xed", directory]
+            return "/usr/bin/xed"
 
         default:
             return nil

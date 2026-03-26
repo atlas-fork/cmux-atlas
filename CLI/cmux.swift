@@ -11146,6 +11146,8 @@ struct CMUXCLI {
           \(bold)\u{2318}\u{21E7}R\(reset)\(subdued)                 Rename workspace\(reset)
           \(bold)\u{2318}\u{21E7}L\(reset)\(subdued)                 New browser\(reset)
           \(bold)\u{2318}\u{21E7}U\(reset)\(subdued)                 Jump to latest unread\(reset)
+          \(bold)\u{2325}\u{2318}A\(reset)\(subdued)                 New Claude Code tab\(reset)
+          \(bold)\u{2325}\u{2318}O\(reset)\(subdued)                 New Codex tab\(reset)
         """
 
         let atlasFeatures = """
@@ -11157,6 +11159,8 @@ struct CMUXCLI {
           \(subdued)•\(reset) \(subdued)AI quick launch buttons — one-click Claude/Codex from the titlebar\(reset)
           \(subdued)•\(reset) \(subdued)Crash autosave — preserve TUI scrollback on unexpected exits\(reset)
           \(subdued)•\(reset) \(subdued)Per-workspace memory usage — see RAM by project in the sidebar\(reset)
+          \(subdued)•\(reset) \(subdued)Browser link toggle — open links in built-in browser or external\(reset)
+          \(subdued)•\(reset) \(subdued)Organizations — save and restore workspace layouts\(reset)
           \(subdued)•\(reset) \(subdued)Reveal in Finder — right-click any tab to open its working directory\(reset)
 
           \(bold)Fork\(reset)\(subdued)                https://github.com/atlascodesai/cmux-atlas\(reset)

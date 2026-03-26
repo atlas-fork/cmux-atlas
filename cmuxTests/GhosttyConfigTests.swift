@@ -2771,6 +2771,8 @@ final class EditorSyncControllerTests: XCTestCase {
             homeDirectoryPath: "/Users/tester",
             isExecutableFileAtPath: { $0 == "/opt/homebrew/bin/code" },
             applicationURLForTarget: { _ in URL(fileURLWithPath: "/Applications/Visual Studio Code.app") },
+            bundleIdentifierForTarget: { _ in "com.microsoft.VSCode" },
+            isApplicationRunning: { _ in false },
             inheritedEnvironment: { ["PATH": "/usr/bin:/bin"] },
             sleep: { _ in await sleepGate.wait() },
             runCLI: { executableURL, arguments, environment in
@@ -2818,6 +2820,8 @@ final class EditorSyncControllerTests: XCTestCase {
             applicationURLForTarget: { target in
                 target == .androidStudio ? expectedAppURL : nil
             },
+            bundleIdentifierForTarget: { _ in nil },
+            isApplicationRunning: { _ in false },
             inheritedEnvironment: { [:] },
             sleep: { _ in },
             runCLI: { _, _, _ in
@@ -2841,5 +2845,162 @@ final class EditorSyncControllerTests: XCTestCase {
 
         XCTAssertEqual(openedDirectoryURL?.path, "/tmp/android-project")
         XCTAssertEqual(openedApplicationURL, expectedAppURL)
+    }
+
+    func testOpenCurrentDirectoryNowUsesZedReuseCLI() {
+        let defaults = makeDefaults()
+        var launchedCommands: [(executable: String, arguments: [String], environment: [String: String])] = []
+
+        let environment = EditorSyncController.Environment(
+            homeDirectoryPath: "/Users/tester",
+            isExecutableFileAtPath: { $0 == "/usr/local/bin/zed" },
+            applicationURLForTarget: { target in
+                target == .zed ? URL(fileURLWithPath: "/Applications/Zed.app") : nil
+            },
+            bundleIdentifierForTarget: { _ in "dev.zed.Zed" },
+            isApplicationRunning: { _ in false },
+            inheritedEnvironment: { ["PATH": "/usr/bin:/bin"] },
+            sleep: { _ in },
+            runCLI: { executableURL, arguments, environment in
+                launchedCommands.append((executableURL.path, arguments, environment))
+            },
+            openDirectory: { _, _ in
+                XCTFail("Expected Zed CLI launch instead of fallback app open")
+            }
+        )
+
+        let controller = EditorSyncController(
+            defaults: defaults,
+            environment: environment,
+            debounceInterval: .milliseconds(0)
+        )
+        controller.targetEditor = .zed
+        controller.currentWorkspaceDirectory = { "/tmp/zed-project" }
+
+        controller.openCurrentDirectoryNow()
+
+        XCTAssertEqual(launchedCommands.count, 1)
+        XCTAssertEqual(launchedCommands.first?.executable, "/usr/local/bin/zed")
+        XCTAssertEqual(launchedCommands.first?.arguments, ["--reuse", "/tmp/zed-project"])
+        XCTAssertEqual(
+            launchedCommands.first?.environment["PATH"],
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+        )
+    }
+
+    func testOpenCurrentDirectoryNowUsesEmbeddedZedCLIWhenShellCLIIsMissing() {
+        let defaults = makeDefaults()
+        let expectedAppURL = URL(fileURLWithPath: "/Applications/Zed.app")
+        let expectedEmbeddedCLI = "/Applications/Zed.app/Contents/MacOS/cli"
+        var launchedCommands: [(executable: String, arguments: [String], environment: [String: String])] = []
+
+        let environment = EditorSyncController.Environment(
+            homeDirectoryPath: "/Users/tester",
+            isExecutableFileAtPath: { $0 == expectedEmbeddedCLI },
+            applicationURLForTarget: { target in
+                target == .zed ? expectedAppURL : nil
+            },
+            bundleIdentifierForTarget: { _ in "dev.zed.Zed" },
+            isApplicationRunning: { _ in false },
+            inheritedEnvironment: { [:] },
+            sleep: { _ in },
+            runCLI: { executableURL, arguments, environment in
+                launchedCommands.append((executableURL.path, arguments, environment))
+            },
+            openDirectory: { _, _ in
+                XCTFail("Expected embedded Zed CLI launch instead of fallback app open")
+            }
+        )
+
+        let controller = EditorSyncController(
+            defaults: defaults,
+            environment: environment,
+            debounceInterval: .milliseconds(0)
+        )
+        controller.targetEditor = .zed
+        controller.currentWorkspaceDirectory = { "/tmp/embedded-zed-project" }
+
+        controller.openCurrentDirectoryNow()
+
+        XCTAssertEqual(launchedCommands.count, 1)
+        XCTAssertEqual(launchedCommands.first?.executable, expectedEmbeddedCLI)
+        XCTAssertEqual(launchedCommands.first?.arguments, ["--reuse", "/tmp/embedded-zed-project"])
+        XCTAssertEqual(
+            launchedCommands.first?.environment["PATH"],
+            "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+        )
+    }
+
+    func testOpenFileInEditorIfRunningUsesVSCodeGoto() {
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: EditorSyncController.enabledKey)
+        var launchedCommands: [(executable: String, arguments: [String], environment: [String: String])] = []
+
+        let environment = EditorSyncController.Environment(
+            homeDirectoryPath: "/Users/tester",
+            isExecutableFileAtPath: { $0 == "/opt/homebrew/bin/code" },
+            applicationURLForTarget: { target in
+                target == .vscode ? URL(fileURLWithPath: "/Applications/Visual Studio Code.app") : nil
+            },
+            bundleIdentifierForTarget: { _ in "com.microsoft.VSCode" },
+            isApplicationRunning: { $0 == "com.microsoft.VSCode" },
+            inheritedEnvironment: { ["PATH": "/usr/bin:/bin"] },
+            sleep: { _ in },
+            runCLI: { executableURL, arguments, environment in
+                launchedCommands.append((executableURL.path, arguments, environment))
+            },
+            openDirectory: { _, _ in
+                XCTFail("Expected file open to use CLI")
+            }
+        )
+
+        let controller = EditorSyncController(
+            defaults: defaults,
+            environment: environment,
+            debounceInterval: .milliseconds(0)
+        )
+        controller.targetEditor = .vscode
+
+        XCTAssertTrue(controller.openFileInEditorIfRunning("/tmp/project/File.swift", line: 42, column: 7))
+        XCTAssertEqual(launchedCommands.count, 1)
+        XCTAssertEqual(launchedCommands.first?.executable, "/opt/homebrew/bin/code")
+        XCTAssertEqual(
+            launchedCommands.first?.arguments,
+            ["--reuse-window", "--goto", "/tmp/project/File.swift:42:7"]
+        )
+    }
+
+    func testOpenFileInEditorIfRunningReturnsFalseWhenEditorIsNotRunning() {
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: EditorSyncController.enabledKey)
+        var didLaunchCLI = false
+
+        let environment = EditorSyncController.Environment(
+            homeDirectoryPath: "/Users/tester",
+            isExecutableFileAtPath: { $0 == "/usr/local/bin/zed" },
+            applicationURLForTarget: { target in
+                target == .zed ? URL(fileURLWithPath: "/Applications/Zed.app") : nil
+            },
+            bundleIdentifierForTarget: { _ in "dev.zed.Zed" },
+            isApplicationRunning: { _ in false },
+            inheritedEnvironment: { [:] },
+            sleep: { _ in },
+            runCLI: { _, _, _ in
+                didLaunchCLI = true
+            },
+            openDirectory: { _, _ in
+                XCTFail("Expected file open path to stay inside cmux when editor is not running")
+            }
+        )
+
+        let controller = EditorSyncController(
+            defaults: defaults,
+            environment: environment,
+            debounceInterval: .milliseconds(0)
+        )
+        controller.targetEditor = .zed
+
+        XCTAssertFalse(controller.openFileInEditorIfRunning("/tmp/project/File.swift", line: 10))
+        XCTAssertFalse(didLaunchCLI)
     }
 }

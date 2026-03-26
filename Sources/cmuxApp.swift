@@ -614,14 +614,14 @@ struct cmuxApp: App {
                         workspace.launchQuickAIAgent(.claudeCode)
                     }
                 }
-                .keyboardShortcut("c", modifiers: [.command, .option])
+                .keyboardShortcut("a", modifiers: [.command, .option])
 
                 Button(String(localized: "menu.file.newCodexTab", defaultValue: "New Codex Tab")) {
                     if let workspace = activeTabManager.selectedWorkspace {
                         workspace.launchQuickAIAgent(.codex)
                     }
                 }
-                .keyboardShortcut("x", modifiers: [.command, .option])
+                .keyboardShortcut("o", modifiers: [.command, .option])
 
                 Divider()
 
