@@ -386,9 +386,18 @@ final class MemoryUsageStore: ObservableObject {
         let ttyName: String
     }
 
+    private struct MissingTTYPanel {
+        let panelId: UUID
+        let workspaceId: UUID
+        let workspaceTitle: String
+        let panelTitle: String
+        let pid: pid_t
+    }
+
     private struct PollContext {
         let appPID: Int32
         let trackedPanels: [TrackedPanel]
+        let missingTTYPanels: [(panelId: UUID, workspaceId: UUID, workspaceTitle: String, panelTitle: String, pid: pid_t)]
     }
 
     private struct PSRow {
@@ -428,8 +437,47 @@ final class MemoryUsageStore: ObservableObject {
     }
 
     private func pollOnce() {
-        let context = capturePollContext()
+        var context = capturePollContext()
         let rows = loadProcessRows()
+
+        // Resolve TTYs for panels that have a known PID but no TTY from shell
+        // integration (e.g. long-running AI sessions after app restart).
+        if !context.missingTTYPanels.isEmpty {
+            let pidToRow = Dictionary(rows.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+            var additionalPanels: [TrackedPanel] = []
+            for missing in context.missingTTYPanels {
+                // Walk PPID chain from the known agent PID to find its TTY.
+                var current = missing.pid
+                var visited: Set<pid_t> = []
+                var resolvedTTY: String?
+                while let row = pidToRow[current] {
+                    if let tty = row.tty {
+                        resolvedTTY = tty
+                        break
+                    }
+                    if !visited.insert(current).inserted { break }
+                    if row.ppid == 0 || row.ppid == current { break }
+                    current = row.ppid
+                }
+                if let tty = resolvedTTY {
+                    additionalPanels.append(TrackedPanel(
+                        panelId: missing.panelId,
+                        workspaceId: missing.workspaceId,
+                        workspaceTitle: missing.workspaceTitle,
+                        panelTitle: missing.panelTitle,
+                        ttyName: tty
+                    ))
+                }
+            }
+            if !additionalPanels.isEmpty {
+                context = PollContext(
+                    appPID: context.appPID,
+                    trackedPanels: context.trackedPanels + additionalPanels,
+                    missingTTYPanels: []
+                )
+            }
+        }
+
         let systemStats = querySystemMemory()
         let nextSnapshot = buildSnapshot(context: context, rows: rows, systemStats: systemStats)
         DispatchQueue.main.async { [weak self] in
@@ -443,12 +491,15 @@ final class MemoryUsageStore: ObservableObject {
         DispatchQueue.main.sync {
             let managers = AppDelegate.shared?.allTabManagers() ?? []
             var trackedPanels: [TrackedPanel] = []
+            var missingTTYPanels: [(panelId: UUID, workspaceId: UUID, workspaceTitle: String, panelTitle: String, pid: pid_t)] = []
 
             for tabManager in managers {
                 for workspace in tabManager.tabs {
                     let workspaceTitle = workspace.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         ? String(localized: "memory.workspace.fallbackTitle", defaultValue: "Workspace")
                         : workspace.title
+
+                    var trackedPanelIds: Set<UUID> = []
                     for (panelId, ttyName) in workspace.surfaceTTYNames {
                         guard workspace.terminalPanel(for: panelId) != nil else { continue }
                         let trimmedTTY = ttyName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -467,11 +518,45 @@ final class MemoryUsageStore: ObservableObject {
                                 ttyName: trimmedTTY
                             )
                         )
+                        trackedPanelIds.insert(panelId)
+                    }
+
+                    // Collect panels with a known agent PID but no TTY — their TTY
+                    // will be resolved off-main via `ps` so the memory poller can
+                    // track them even when shell integration hasn't fired report_tty
+                    // (e.g. long-running AI sessions after app restart).
+                    for (panelId, snapshot) in workspace.activeAISessions {
+                        guard !trackedPanelIds.contains(panelId),
+                              let pid = snapshot.pid, pid > 0,
+                              workspace.terminalPanel(for: panelId) != nil else { continue }
+                        let rawPanelTitle = workspace.panelTitle(panelId: panelId)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let panelTitle = rawPanelTitle?.isEmpty == false
+                            ? rawPanelTitle!
+                            : String(localized: "memory.panel.fallbackTitle", defaultValue: "Terminal")
+                        missingTTYPanels.append((panelId: panelId, workspaceId: workspace.id, workspaceTitle: workspaceTitle, panelTitle: panelTitle, pid: pid))
+                    }
+
+                    for (key, pid) in workspace.agentPIDs {
+                        // agentPIDs are keyed by agent name, not panel ID — try
+                        // to find a panel that isn't already tracked.
+                        guard pid > 0 else { continue }
+                        let panelId = workspace.focusedPanelId ?? workspace.panels.keys.first(where: { !trackedPanelIds.contains($0) })
+                        guard let panelId, !trackedPanelIds.contains(panelId),
+                              !missingTTYPanels.contains(where: { $0.panelId == panelId }),
+                              workspace.terminalPanel(for: panelId) != nil else { continue }
+                        let rawPanelTitle = workspace.panelTitle(panelId: panelId)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let panelTitle = rawPanelTitle?.isEmpty == false
+                            ? rawPanelTitle!
+                            : String(localized: "memory.panel.fallbackTitle", defaultValue: "Terminal")
+                        missingTTYPanels.append((panelId: panelId, workspaceId: workspace.id, workspaceTitle: workspaceTitle, panelTitle: panelTitle, pid: pid))
+                        _ = key // suppress unused warning
                     }
                 }
             }
 
-            return PollContext(appPID: getpid(), trackedPanels: trackedPanels)
+            return PollContext(appPID: getpid(), trackedPanels: trackedPanels, missingTTYPanels: missingTTYPanels)
         }
     }
 

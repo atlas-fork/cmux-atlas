@@ -10430,7 +10430,11 @@ struct CMUXTermMain {
         do {
             try cli.run()
         } catch {
-            FileHandle.standardError.write(Data("Error: \(error)\n".utf8))
+            // Guard against stderr being closed (e.g. when the parent terminal
+            // is gone) — writing to a broken file handle throws NSException
+            // which would mask the original error with a SIGABRT.
+            let msg = Data("Error: \(error)\n".utf8)
+            try? FileHandle.standardError.write(contentsOf: msg)
             exit(1)
         }
     }
