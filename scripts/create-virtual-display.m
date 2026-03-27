@@ -292,6 +292,7 @@ int main(int argc, const char *argv[]) {
                     writeString([NSString stringWithFormat:@"error:%d\n", setError], donePath);
                     return;
                 }
+                writeString(@"progress:0\n", donePath);
 
                 for (NSInteger i = 0; i < iterations; i += 1) {
                     NSUInteger targetIndex = (NSUInteger)((i + 1) % resolvedModes.count);
@@ -302,6 +303,7 @@ int main(int argc, const char *argv[]) {
                         writeString([NSString stringWithFormat:@"error:%d\n", churnError], donePath);
                         return;
                     }
+                    writeString([NSString stringWithFormat:@"progress:%ld\n", (long)(i + 1)], donePath);
                     usleep(intervalMicros);
                 }
 
