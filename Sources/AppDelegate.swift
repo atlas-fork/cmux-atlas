@@ -1713,7 +1713,12 @@ func shouldHandleCommandPaletteShortcutEvent(
     }
     let eventWindowNumber = event.windowNumber
     if eventWindowNumber > 0 {
-        return eventWindowNumber == paletteWindow.windowNumber
+        if eventWindowNumber == paletteWindow.windowNumber {
+            return true
+        }
+        if let numberedWindow = NSApp.window(withWindowNumber: eventWindowNumber) {
+            return numberedWindow === paletteWindow
+        }
     }
     if let keyWindow = NSApp.keyWindow {
         return keyWindow === paletteWindow
@@ -5052,7 +5057,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func closeMainWindow(windowId: UUID) -> Bool {
         guard let window = windowForMainWindowId(windowId) else { return false }
-        window.performClose(nil)
+        window.close()
         return true
     }
 
@@ -5088,11 +5093,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @discardableResult
     func closeWindowWithConfirmation(_ window: NSWindow) -> Bool {
         guard isMainTerminalWindow(window) else {
-            window.performClose(nil)
+            window.close()
             return true
         }
         guard confirmCloseMainWindow(window) else { return true }
-        window.performClose(nil)
+        window.close()
         return true
     }
 
@@ -5331,6 +5336,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    private func pruneOrphanedMainWindowContexts() {
+        var seen: Set<ObjectIdentifier> = []
+        let orphanedContexts = mainWindowContexts.values.filter { context in
+            let identity = ObjectIdentifier(context)
+            guard seen.insert(identity).inserted else { return false }
+            return resolvedWindow(for: context) == nil
+        }
+        for context in orphanedContexts {
+            discardOrphanedMainWindowContext(context)
+        }
+    }
+
     private func mainWindowId(for window: NSWindow) -> UUID? {
         if let context = mainWindowContexts[ObjectIdentifier(window)] {
             return context.windowId
@@ -5421,7 +5438,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func commandPaletteWindowForShortcutEvent(_ event: NSEvent) -> NSWindow? {
-        if let scopedWindow = mainWindowForShortcutEvent(event) {
+        if let scopedContext = mainWindowContext(forShortcutEvent: event, debugSource: "commandPalette.shortcut"),
+           let scopedWindow = resolvedWindow(for: scopedContext) {
             return scopedWindow
         }
         return activeCommandPaletteWindow()
@@ -5596,20 +5614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func preferredMainWindowContextForShortcuts(event: NSEvent) -> MainWindowContext? {
-        if let context = contextForMainWindow(event.window) {
-            return context
-        }
-        if let context = contextForMainWindow(NSApp.keyWindow) {
-            return context
-        }
-        if let context = contextForMainWindow(NSApp.mainWindow) {
-            return context
-        }
-        if let activeManager = tabManager,
-           let activeContext = mainWindowContexts.values.first(where: { $0.tabManager === activeManager }) {
-            return activeContext
-        }
-        return mainWindowContexts.values.first
+        preferredMainWindowContextForShortcutRouting(event: event)
     }
 
     private func activateMainWindowContextForShortcutEvent(_ event: NSEvent) {
@@ -5881,6 +5886,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         event: NSEvent? = nil,
         debugSource: String = "unspecified"
     ) -> MainWindowContext? {
+        pruneOrphanedMainWindowContexts()
         if let context = mainWindowContext(forShortcutEvent: event, debugSource: debugSource) {
             return context
         }
@@ -9496,7 +9502,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             shortcut: StoredShortcut(key: "p", command: true, shift: true, option: false, control: false)
         )
         if isCommandShiftP {
-            let targetWindow = commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+            let targetWindow = commandPaletteTargetWindow
+                ?? mainWindowForShortcutEvent(event)
+                ?? event.window
+                ?? NSApp.keyWindow
+                ?? NSApp.mainWindow
             requestCommandPaletteCommands(preferredWindow: targetWindow, source: "shortcut.cmdShiftP")
             return true
         }
@@ -9507,7 +9517,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 shortcut: StoredShortcut(key: "p", command: true, shift: false, option: false, control: false)
             )
         if isCommandP {
-            let targetWindow = commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+            let targetWindow = commandPaletteTargetWindow
+                ?? mainWindowForShortcutEvent(event)
+                ?? event.window
+                ?? NSApp.keyWindow
+                ?? NSApp.mainWindow
             requestCommandPaletteSwitcher(preferredWindow: targetWindow, source: "shortcut.cmdP")
             return true
         }
@@ -9765,7 +9779,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         if matchShortcut(event: event, shortcut: KeyboardShortcutSettings.shortcut(for: .renameWorkspace)) {
             return requestRenameWorkspaceViaCommandPalette(
-                preferredWindow: commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+                preferredWindow: commandPaletteTargetWindow
+                    ?? mainWindowForShortcutEvent(event)
+                    ?? event.window
+                    ?? NSApp.keyWindow
+                    ?? NSApp.mainWindow
             )
         }
 
@@ -9773,12 +9791,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             event: event,
             shortcut: StoredShortcut(key: "t", command: true, shift: false, option: true, control: false)
         ) {
-            if let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow,
+            let routedWindow = mainWindowForShortcutEvent(event) ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+            if let targetWindow = routedWindow,
                targetWindow.identifier?.rawValue == "cmux.settings" {
-                targetWindow.performClose(nil)
+                targetWindow.close()
             } else {
-                let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-                if let terminalContext = focusedTerminalShortcutContext(preferredWindow: targetWindow) {
+                if let terminalContext = focusedTerminalShortcutContext(preferredWindow: routedWindow) {
                     terminalContext.tabManager.closeOtherTabsInFocusedPaneWithConfirmation()
                 } else {
                     tabManager?.closeOtherTabsInFocusedPaneWithConfirmation()
@@ -9793,23 +9811,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             event: event,
             shortcut: StoredShortcut(key: "w", command: true, shift: false, option: false, control: false)
         ) {
+            let routedWindow = mainWindowForShortcutEvent(event) ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
             // Browser popup windows primarily intercept Cmd+W in BrowserPopupPanel.
             // This AppDelegate path is a fallback for cases where AppKit routes the
             // event through the global shortcut handler first.
-            if let targetWindow = [NSApp.keyWindow, event.window]
+            if let targetWindow = [routedWindow, NSApp.keyWindow, event.window]
                 .compactMap({ $0 })
                 .first(where: { $0.identifier?.rawValue == "cmux.browser-popup" }) {
 #if DEBUG
                 dlog("shortcut.cmdW route=browserPopup")
 #endif
-                targetWindow.performClose(nil)
+                targetWindow.close()
                 return true
-            } else if let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow,
+            } else if let targetWindow = routedWindow,
                cmuxWindowShouldOwnCloseShortcut(targetWindow) {
-                targetWindow.performClose(nil)
+                targetWindow.close()
             } else {
-                let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
-                if let terminalContext = focusedTerminalShortcutContext(preferredWindow: targetWindow) {
+                if let terminalContext = focusedTerminalShortcutContext(preferredWindow: routedWindow) {
 #if DEBUG
                     dlog(
                         "shortcut.cmdW route=ghostty workspace=\(terminalContext.workspaceId.uuidString.prefix(5)) " +
@@ -9836,7 +9854,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if matchShortcut(event: event, shortcut: KeyboardShortcutSettings.shortcut(for: .closeWindow)) {
-            guard let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow else {
+            guard let targetWindow = mainWindowForShortcutEvent(event) ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow else {
                 NSSound.beep()
                 return true
             }
@@ -9950,7 +9968,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             _ = performSplitShortcut(
                 direction: .right,
-                preferredWindow: event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+                preferredWindow: mainWindowForShortcutEvent(event) ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
             )
             return true
         }
@@ -9964,7 +9982,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             _ = performSplitShortcut(
                 direction: .down,
-                preferredWindow: event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+                preferredWindow: mainWindowForShortcutEvent(event) ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
             )
             return true
         }
@@ -11428,7 +11446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let context = contextContainingTabId(tabId) else { return }
         let expectedIdentifier = "cmux.main.\(context.windowId.uuidString)"
         let window: NSWindow? = context.window ?? NSApp.windows.first(where: { $0.identifier?.rawValue == expectedIdentifier })
-        window?.performClose(nil)
+        window?.close()
     }
 
     @discardableResult

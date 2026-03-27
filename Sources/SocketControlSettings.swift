@@ -467,9 +467,6 @@ struct SocketControlSettings {
         currentUserID: uid_t = getuid(),
         probeStableDefaultPathEntry: (String) -> StableDefaultSocketPathEntry = inspectStableDefaultSocketPathEntry
     ) -> String {
-        if let taggedDebugPath = taggedDebugSocketPath(bundleIdentifier: bundleIdentifier, environment: [:]) {
-            return taggedDebugPath
-        }
         if bundleIdentifier == Branding.nightlyBundleIdentifier {
             return Branding.nightlySocketPath
         }

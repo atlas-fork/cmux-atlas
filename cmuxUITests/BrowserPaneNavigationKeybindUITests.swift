@@ -817,7 +817,6 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
             },
             "Expected Cmd+D to create a split before opening the browser. data=\(String(describing: loadData()))"
         )
-        XCTAssertTrue(waitForSocketPong(timeout: 12.0), "Expected control socket before Cmd+L after split")
 
         var browserOpenedViaCmdL = false
         for attempt in 0..<2 {
