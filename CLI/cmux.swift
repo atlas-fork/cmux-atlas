@@ -1265,6 +1265,11 @@ struct CMUXCLI {
         ) {
             return
         }
+        if command == "codex-hook",
+           ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] == nil {
+            print("{}")
+            return
+        }
 
         let client = SocketClient(path: resolvedSocketPath)
         if resolvedSocketPath != socketPath {

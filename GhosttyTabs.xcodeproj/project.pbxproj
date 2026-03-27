@@ -32,9 +32,12 @@
 		A5001656 /* TabManager+AtlasOrganizations.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001657 /* TabManager+AtlasOrganizations.swift */; };
 		A5001658 /* AppDelegate+AtlasAISessions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001659 /* AppDelegate+AtlasAISessions.swift */; };
 		A500165A /* AppDelegate+AtlasOrganizations.swift in Sources */ = {isa = PBXBuildFile; fileRef = A500165B /* AppDelegate+AtlasOrganizations.swift */; };
-		A500165C /* WorkspaceAtlasAISessions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A500165D /* WorkspaceAtlasAISessions.swift */; };
-		A500165E /* CMUXCoreNewItemCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = A500165F /* CMUXCoreNewItemCommands.swift */; };
-		A5001400 /* Panel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001410 /* Panel.swift */; };
+			A500165C /* WorkspaceAtlasAISessions.swift in Sources */ = {isa = PBXBuildFile; fileRef = A500165D /* WorkspaceAtlasAISessions.swift */; };
+			A500165E /* CMUXCoreNewItemCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = A500165F /* CMUXCoreNewItemCommands.swift */; };
+			A5001660 /* CmuxConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001661 /* CmuxConfig.swift */; };
+			A5001662 /* CmuxConfigExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001663 /* CmuxConfigExecutor.swift */; };
+			A5001664 /* CmuxDirectoryTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001665 /* CmuxDirectoryTrust.swift */; };
+			A5001400 /* Panel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001410 /* Panel.swift */; };
 		A5001401 /* TerminalPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001411 /* TerminalPanel.swift */; };
 		A5001402 /* BrowserPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001412 /* BrowserPanel.swift */; };
 		A5001403 /* TerminalPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001413 /* TerminalPanelView.swift */; };
@@ -137,10 +140,11 @@
 					B6BF3DC98DB1495E57900199 /* TabManagerUnitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42092CDB2109E250F7F2A76E /* TabManagerUnitTests.swift */; };
 					DCC935C5F55C1DCB33E25521 /* WorkspacePullRequestSidebarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14A7DC53B9CA33BE2A421711 /* WorkspacePullRequestSidebarTests.swift */; };
 					0F2C25F9170130F8DC09DD1B /* WorkspaceManualUnreadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D301919B10F22B8708E8883 /* WorkspaceManualUnreadTests.swift */; };
-					CA39C0304FE351A21C372429 /* SidebarWidthPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0171AF1F49F7547191CEE5 /* SidebarWidthPolicyTests.swift */; };
-					8C4BBF2DEF6DF93F395A9EE7 /* TerminalControllerSocketSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 491751CE2321474474F27DCF /* TerminalControllerSocketSecurityTests.swift */; };
-					2BB56A710BB1FC50367E5BCF /* TabManagerSessionSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10D684CFFB8CDEF89CE2D9E1 /* TabManagerSessionSnapshotTests.swift */; };
-					A1B2C3D4E5F6071800000001 /* TabContextMenuPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071800000002 /* TabContextMenuPathTests.swift */; };
+						CA39C0304FE351A21C372429 /* SidebarWidthPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE0171AF1F49F7547191CEE5 /* SidebarWidthPolicyTests.swift */; };
+						8C4BBF2DEF6DF93F395A9EE7 /* TerminalControllerSocketSecurityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 491751CE2321474474F27DCF /* TerminalControllerSocketSecurityTests.swift */; };
+						2BB56A710BB1FC50367E5BCF /* TabManagerSessionSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10D684CFFB8CDEF89CE2D9E1 /* TabManagerSessionSnapshotTests.swift */; };
+						A1B2C3D4E5F6071800000001 /* TabContextMenuPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071800000002 /* TabContextMenuPathTests.swift */; };
+						C1A2B3C4D5E6F70800000001 /* CmuxConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A2B3C4D5E6F70800000002 /* CmuxConfigTests.swift */; };
 		/* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -215,10 +219,13 @@
 		A5001018 /* cmux-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "cmux-Bridging-Header.h"; sourceTree = "<group>"; };
 		A5001019 /* TerminalController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalController.swift; sourceTree = "<group>"; };
 		A5001600 /* SentryHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryHelper.swift; sourceTree = "<group>"; };
-		A5001620 /* AppleScriptSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleScriptSupport.swift; sourceTree = "<group>"; };
-		A5001651 /* AtlasAIQuickLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AtlasAIQuickLaunch.swift; sourceTree = "<group>"; };
-		A5001653 /* AtlasAppCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AtlasAppCommands.swift; sourceTree = "<group>"; };
-			A5001510 /* CmuxWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/CmuxWebView.swift; sourceTree = "<group>"; };
+			A5001620 /* AppleScriptSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleScriptSupport.swift; sourceTree = "<group>"; };
+			A5001651 /* AtlasAIQuickLaunch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AtlasAIQuickLaunch.swift; sourceTree = "<group>"; };
+			A5001653 /* AtlasAppCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AtlasAppCommands.swift; sourceTree = "<group>"; };
+			A5001661 /* CmuxConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxConfig.swift; sourceTree = "<group>"; };
+			A5001663 /* CmuxConfigExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxConfigExecutor.swift; sourceTree = "<group>"; };
+			A5001665 /* CmuxDirectoryTrust.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxDirectoryTrust.swift; sourceTree = "<group>"; };
+				A5001510 /* CmuxWebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/CmuxWebView.swift; sourceTree = "<group>"; };
 			A5001511 /* UITestRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITestRecorder.swift; sourceTree = "<group>"; };
 			A5001520 /* PostHogAnalytics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PostHogAnalytics.swift; sourceTree = "<group>"; };
 			A5001225 /* SocketControlSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketControlSettings.swift; sourceTree = "<group>"; };
@@ -321,10 +328,11 @@
 				14A7DC53B9CA33BE2A421711 /* WorkspacePullRequestSidebarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspacePullRequestSidebarTests.swift; sourceTree = "<group>"; };
 				1D301919B10F22B8708E8883 /* WorkspaceManualUnreadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceManualUnreadTests.swift; sourceTree = "<group>"; };
 				EE0171AF1F49F7547191CEE5 /* SidebarWidthPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarWidthPolicyTests.swift; sourceTree = "<group>"; };
-				491751CE2321474474F27DCF /* TerminalControllerSocketSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalControllerSocketSecurityTests.swift; sourceTree = "<group>"; };
-				10D684CFFB8CDEF89CE2D9E1 /* TabManagerSessionSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabManagerSessionSnapshotTests.swift; sourceTree = "<group>"; };
-					A1B2C3D4E5F6071800000002 /* TabContextMenuPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabContextMenuPathTests.swift; sourceTree = "<group>"; };
-		BB200001 /* Branding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Branding.swift; sourceTree = "<group>"; };
+					491751CE2321474474F27DCF /* TerminalControllerSocketSecurityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalControllerSocketSecurityTests.swift; sourceTree = "<group>"; };
+					10D684CFFB8CDEF89CE2D9E1 /* TabManagerSessionSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabManagerSessionSnapshotTests.swift; sourceTree = "<group>"; };
+						A1B2C3D4E5F6071800000002 /* TabContextMenuPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabContextMenuPathTests.swift; sourceTree = "<group>"; };
+						C1A2B3C4D5E6F70800000002 /* CmuxConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxConfigTests.swift; sourceTree = "<group>"; };
+			BB200001 /* Branding.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Branding.swift; sourceTree = "<group>"; };
 		AA100001 /* AISessionDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionDetector.swift; sourceTree = "<group>"; };
 		AA100002 /* AISessionResumeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionResumeView.swift; sourceTree = "<group>"; };
 		AA100004 /* EditorSyncController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorSyncController.swift; sourceTree = "<group>"; };
@@ -469,11 +477,14 @@
 				A5001653 /* AtlasAppCommands.swift */,
 				A5001655 /* TabManager+AtlasAISessions.swift */,
 				A5001657 /* TabManager+AtlasOrganizations.swift */,
-				A5001659 /* AppDelegate+AtlasAISessions.swift */,
-				A500165B /* AppDelegate+AtlasOrganizations.swift */,
-				A500165D /* WorkspaceAtlasAISessions.swift */,
-				A500165F /* CMUXCoreNewItemCommands.swift */,
-				A5001301 /* SurfaceSearchOverlay.swift */,
+					A5001659 /* AppDelegate+AtlasAISessions.swift */,
+					A500165B /* AppDelegate+AtlasOrganizations.swift */,
+					A500165D /* WorkspaceAtlasAISessions.swift */,
+					A500165F /* CMUXCoreNewItemCommands.swift */,
+					A5001661 /* CmuxConfig.swift */,
+					A5001663 /* CmuxConfigExecutor.swift */,
+					A5001665 /* CmuxDirectoryTrust.swift */,
+					A5001301 /* SurfaceSearchOverlay.swift */,
 				A5008370 /* BrowserSearchOverlay.swift */,
 				A5008372 /* BrowserFindJavaScript.swift */,
 				A5001410 /* Panel.swift */,
@@ -599,10 +610,11 @@
 					14A7DC53B9CA33BE2A421711 /* WorkspacePullRequestSidebarTests.swift */,
 					1D301919B10F22B8708E8883 /* WorkspaceManualUnreadTests.swift */,
 					EE0171AF1F49F7547191CEE5 /* SidebarWidthPolicyTests.swift */,
-					491751CE2321474474F27DCF /* TerminalControllerSocketSecurityTests.swift */,
-					10D684CFFB8CDEF89CE2D9E1 /* TabManagerSessionSnapshotTests.swift */,
-					A1B2C3D4E5F6071800000002 /* TabContextMenuPathTests.swift */,
-				);
+						491751CE2321474474F27DCF /* TerminalControllerSocketSecurityTests.swift */,
+						10D684CFFB8CDEF89CE2D9E1 /* TabManagerSessionSnapshotTests.swift */,
+						A1B2C3D4E5F6071800000002 /* TabContextMenuPathTests.swift */,
+						C1A2B3C4D5E6F70800000002 /* CmuxConfigTests.swift */,
+					);
 				path = cmuxTests;
 				sourceTree = "<group>";
 			};
@@ -782,11 +794,14 @@
 				A5001652 /* AtlasAppCommands.swift in Sources */,
 				A5001654 /* TabManager+AtlasAISessions.swift in Sources */,
 				A5001656 /* TabManager+AtlasOrganizations.swift in Sources */,
-				A5001658 /* AppDelegate+AtlasAISessions.swift in Sources */,
-				A500165A /* AppDelegate+AtlasOrganizations.swift in Sources */,
-				A500165C /* WorkspaceAtlasAISessions.swift in Sources */,
-				A500165E /* CMUXCoreNewItemCommands.swift in Sources */,
-				A5001303 /* SurfaceSearchOverlay.swift in Sources */,
+					A5001658 /* AppDelegate+AtlasAISessions.swift in Sources */,
+					A500165A /* AppDelegate+AtlasOrganizations.swift in Sources */,
+					A500165C /* WorkspaceAtlasAISessions.swift in Sources */,
+					A500165E /* CMUXCoreNewItemCommands.swift in Sources */,
+					A5001660 /* CmuxConfig.swift in Sources */,
+					A5001662 /* CmuxConfigExecutor.swift in Sources */,
+					A5001664 /* CmuxDirectoryTrust.swift in Sources */,
+					A5001303 /* SurfaceSearchOverlay.swift in Sources */,
 				A5008371 /* BrowserSearchOverlay.swift in Sources */,
 				A5008373 /* BrowserFindJavaScript.swift in Sources */,
 				A5001400 /* Panel.swift in Sources */,
@@ -876,10 +891,11 @@
 					DCC935C5F55C1DCB33E25521 /* WorkspacePullRequestSidebarTests.swift in Sources */,
 					0F2C25F9170130F8DC09DD1B /* WorkspaceManualUnreadTests.swift in Sources */,
 					CA39C0304FE351A21C372429 /* SidebarWidthPolicyTests.swift in Sources */,
-					8C4BBF2DEF6DF93F395A9EE7 /* TerminalControllerSocketSecurityTests.swift in Sources */,
-					2BB56A710BB1FC50367E5BCF /* TabManagerSessionSnapshotTests.swift in Sources */,
-					A1B2C3D4E5F6071800000001 /* TabContextMenuPathTests.swift in Sources */,
-				);
+						8C4BBF2DEF6DF93F395A9EE7 /* TerminalControllerSocketSecurityTests.swift in Sources */,
+						2BB56A710BB1FC50367E5BCF /* TabManagerSessionSnapshotTests.swift in Sources */,
+						A1B2C3D4E5F6071800000001 /* TabContextMenuPathTests.swift in Sources */,
+						C1A2B3C4D5E6F70800000001 /* CmuxConfigTests.swift in Sources */,
+					);
 				runOnlyForDeploymentPostprocessing = 0;
 			};
 			B9000006A1B2C3D4E5F60719 /* Sources */ = {

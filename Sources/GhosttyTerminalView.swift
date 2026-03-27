@@ -3114,6 +3114,14 @@ final class TerminalSurface: Identifiable, ObservableObject {
         attachedView === view && surface != nil
     }
 
+    /// Whether the runtime Ghostty surface exists and has not begun teardown.
+    ///
+    /// Use this as a quick availability check. Before passing `surface` to
+    /// Ghostty C APIs that dereference the pointer, call
+    /// `liveSurfaceForGhosttyAccess(reason:)` so stale freed pointers are
+    /// rejected and quarantined.
+    var hasLiveSurface: Bool { surface != nil && portalLifecycleState == .live }
+
     func portalBindingGeneration() -> UInt64 {
         portalLifecycleGeneration
     }
@@ -3373,6 +3381,28 @@ final class TerminalSurface: Identifiable, ObservableObject {
             ghostty_surface_free(surfaceToFree)
             callbackContext?.release()
         }
+    }
+
+    @MainActor
+    func liveSurfaceForGhosttyAccess(reason: String) -> ghostty_surface_t? {
+        guard hasLiveSurface, let surface else { return nil }
+        guard cmuxSurfacePointerAppearsLive(surface) else {
+            let callbackContext = surfaceCallbackContext
+            surfaceCallbackContext = nil
+            self.surface = nil
+            activePortalHostLease = nil
+            recordTeardownRequest(reason: reason)
+            markPortalLifecycleClosed(reason: reason)
+#if DEBUG
+            dlog(
+                "surface.lifecycle.stale surface=\(id.uuidString.prefix(5)) " +
+                "workspace=\(tabId.uuidString.prefix(5)) reason=\(reason)"
+            )
+#endif
+            callbackContext?.release()
+            return nil
+        }
+        return surface
     }
 
     #if DEBUG
@@ -3976,6 +4006,41 @@ final class TerminalSurface: Identifiable, ObservableObject {
     }
 #endif
 
+    /// Send text with control characters (Return, Tab, etc.) delivered as key
+    /// events so the shell processes them, while regular text is sent via the
+    /// normal key-text path. Mirrors `TerminalController.sendSocketText`.
+    func sendInput(_ text: String) {
+        guard let surface = surface else { return }
+        var bufferedText = ""
+        var previousWasCR = false
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x0A:
+                if !previousWasCR {
+                    flushText(&bufferedText, surface: surface)
+                    sendKeyEvent(surface: surface, keycode: 0x24)
+                }
+                previousWasCR = false
+            case 0x0D:
+                flushText(&bufferedText, surface: surface)
+                sendKeyEvent(surface: surface, keycode: 0x24)
+                previousWasCR = true
+            case 0x09:
+                flushText(&bufferedText, surface: surface)
+                sendKeyEvent(surface: surface, keycode: 0x30)
+                previousWasCR = false
+            case 0x1B:
+                flushText(&bufferedText, surface: surface)
+                sendKeyEvent(surface: surface, keycode: 0x35)
+                previousWasCR = false
+            default:
+                bufferedText.unicodeScalars.append(scalar)
+                previousWasCR = false
+            }
+        }
+        flushText(&bufferedText, surface: surface)
+    }
+
     func requestBackgroundSurfaceStartIfNeeded() {
         if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
@@ -4010,6 +4075,34 @@ final class TerminalSurface: Identifiable, ObservableObject {
             guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
             ghostty_surface_text(surface, baseAddress, UInt(rawBuffer.count))
         }
+    }
+
+    private func flushText(_ buffer: inout String, surface: ghostty_surface_t) {
+        guard !buffer.isEmpty else { return }
+        var keyEvent = ghostty_input_key_s()
+        keyEvent.action = GHOSTTY_ACTION_PRESS
+        keyEvent.keycode = 0
+        keyEvent.mods = GHOSTTY_MODS_NONE
+        keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+        keyEvent.unshifted_codepoint = 0
+        keyEvent.composing = false
+        buffer.withCString { ptr in
+            keyEvent.text = ptr
+            _ = ghostty_surface_key(surface, keyEvent)
+        }
+        buffer.removeAll(keepingCapacity: true)
+    }
+
+    private func sendKeyEvent(surface: ghostty_surface_t, keycode: UInt32) {
+        var keyEvent = ghostty_input_key_s()
+        keyEvent.action = GHOSTTY_ACTION_PRESS
+        keyEvent.keycode = keycode
+        keyEvent.mods = GHOSTTY_MODS_NONE
+        keyEvent.consumed_mods = GHOSTTY_MODS_NONE
+        keyEvent.unshifted_codepoint = 0
+        keyEvent.composing = false
+        keyEvent.text = nil
+        _ = ghostty_surface_key(surface, keyEvent)
     }
 
     private func enqueuePendingText(_ data: Data) {
@@ -7739,6 +7832,7 @@ final class GhosttySurfaceScrollView: NSView {
             tabId: terminalSurface.tabId,
             surfaceId: terminalSurface.id,
             searchState: searchState,
+            canApplyFocusRequest: { true },
             onMoveFocusToTerminal: { [weak self] in
                 self?.searchFocusTarget = .terminal
                 self?.moveFocus()

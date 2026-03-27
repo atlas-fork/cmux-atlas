@@ -3,6 +3,223 @@ import Foundation
 import AppKit
 import Bonsplit
 
+enum TmuxOverlayExperimentTarget: String, CaseIterable, Codable, Sendable {
+    case surface
+    case bonsplitPane
+    case tmuxActivePane
+
+    var usesWorkspacePaneOverlay: Bool {
+        self == .bonsplitPane
+    }
+
+    var usesTmuxActivePaneOverlay: Bool {
+        self == .tmuxActivePane
+    }
+}
+
+struct TmuxOverlayExperimentSettings {
+    static let enabledKey = "tmuxOverlayExperimentEnabled"
+    static let targetKey = "tmuxOverlayExperimentTarget"
+    static let defaultEnabled = false
+    static let defaultTarget: TmuxOverlayExperimentTarget = .surface
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: enabledKey) as? Bool ?? defaultEnabled
+    }
+
+    static func target(defaults: UserDefaults = .standard) -> TmuxOverlayExperimentTarget {
+        target(
+            enabled: isEnabled(defaults: defaults),
+            rawValue: defaults.string(forKey: targetKey)
+        )
+    }
+
+    static func target(enabled: Bool, rawValue: String?) -> TmuxOverlayExperimentTarget {
+        guard enabled else { return .surface }
+        guard let rawValue,
+              let target = TmuxOverlayExperimentTarget(rawValue: rawValue) else {
+            return defaultTarget
+        }
+        return target
+    }
+}
+
+private enum WorkspaceTitlebarInteractionMetrics {
+    // Keep in sync with Bonsplit's tab bar height so the monitor only covers
+    // the minimal-mode titlebar strip.
+    static let minimalModeTopStripHeight: CGFloat = 30
+}
+
+struct TmuxPaneLayoutPane: Codable, Equatable, Sendable {
+    let paneId: String
+    let left: Int
+    let top: Int
+    let width: Int
+    let height: Int
+    let isActive: Bool
+}
+
+struct TmuxPaneLayoutReport: Codable, Equatable, Sendable {
+    let panes: [TmuxPaneLayoutPane]
+
+    var activePane: TmuxPaneLayoutPane? {
+        panes.first(where: \.isActive) ?? panes.first
+    }
+}
+
+func tmuxActivePaneOverlayRect(
+    surfaceFrame: CGRect,
+    cellSize: CGSize,
+    pane: TmuxPaneLayoutPane
+) -> CGRect? {
+    guard cellSize.width > 0,
+          cellSize.height > 0,
+          pane.width > 0,
+          pane.height > 0 else {
+        return nil
+    }
+
+    return CGRect(
+        x: surfaceFrame.origin.x + (CGFloat(pane.left) * cellSize.width),
+        y: surfaceFrame.origin.y + (CGFloat(pane.top) * cellSize.height),
+        width: CGFloat(pane.width) * cellSize.width,
+        height: CGFloat(pane.height) * cellSize.height
+    )
+}
+
+private extension PixelRect {
+    var cgRect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+struct TmuxWorkspacePaneOverlayRenderState: Equatable {
+    let workspaceId: UUID
+    let unreadRects: [CGRect]
+    let flashRect: CGRect?
+    let flashToken: UInt64
+    let flashReason: WorkspaceAttentionFlashReason?
+}
+
+@MainActor
+final class TmuxWorkspacePaneOverlayModel: ObservableObject {
+    @Published private(set) var unreadRects: [CGRect] = []
+    @Published private(set) var flashRect: CGRect?
+    @Published private(set) var flashStartedAt: Date?
+    @Published private(set) var flashReason: WorkspaceAttentionFlashReason?
+
+    private var lastWorkspaceId: UUID?
+    private var lastFlashToken: UInt64?
+
+    func apply(
+        _ state: TmuxWorkspacePaneOverlayRenderState,
+        now: () -> Date = Date.init
+    ) {
+        unreadRects = state.unreadRects
+        flashRect = state.flashRect
+        flashReason = state.flashReason
+
+        let didChangeWorkspace = lastWorkspaceId != state.workspaceId
+        if didChangeWorkspace {
+            lastWorkspaceId = state.workspaceId
+            lastFlashToken = state.flashToken
+            flashStartedAt = nil
+            return
+        }
+
+        if let lastFlashToken,
+           state.flashToken != lastFlashToken,
+           state.flashRect != nil {
+            flashStartedAt = now()
+        }
+        self.lastFlashToken = state.flashToken
+    }
+
+    func clear() {
+        unreadRects = []
+        flashRect = nil
+        flashStartedAt = nil
+        flashReason = nil
+        lastWorkspaceId = nil
+        lastFlashToken = nil
+    }
+}
+
+struct TmuxWorkspacePaneOverlayView: View {
+    let unreadRects: [CGRect]
+    let flashRect: CGRect?
+    let flashStartedAt: Date?
+    let flashReason: WorkspaceAttentionFlashReason?
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, _ in
+                for rect in unreadRects {
+                    drawUnreadRing(in: &context, rect: rect)
+                }
+
+                guard let flashRect,
+                      let flashStartedAt else { return }
+                let elapsed = timeline.date.timeIntervalSince(flashStartedAt)
+                let opacity = FocusFlashPattern.opacity(at: elapsed)
+                guard opacity > 0.001 else { return }
+                drawFlashRing(
+                    in: &context,
+                    rect: flashRect,
+                    opacity: opacity,
+                    reason: flashReason ?? .notificationArrival
+                )
+            }
+        }
+        .allowsHitTesting(false)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func drawUnreadRing(in context: inout GraphicsContext, rect: CGRect) {
+        guard let path = ringPath(for: rect) else { return }
+        var glowContext = context
+        glowContext.addFilter(.shadow(color: Color.blue.opacity(0.35), radius: 3))
+        glowContext.stroke(
+            path,
+            with: .color(Color.blue),
+            style: StrokeStyle(lineWidth: PanelOverlayRingMetrics.lineWidth, lineJoin: .round)
+        )
+    }
+
+    private func drawFlashRing(
+        in context: inout GraphicsContext,
+        rect: CGRect,
+        opacity: Double,
+        reason: WorkspaceAttentionFlashReason
+    ) {
+        guard let path = ringPath(for: rect) else { return }
+        let presentation = WorkspaceAttentionCoordinator.flashStyle(for: reason)
+        let strokeColor = Color(nsColor: presentation.accent.strokeColor)
+
+        var glowContext = context
+        glowContext.addFilter(
+            .shadow(
+                color: strokeColor.opacity(opacity * presentation.glowOpacity),
+                radius: presentation.glowRadius
+            )
+        )
+        glowContext.stroke(
+            path,
+            with: .color(strokeColor.opacity(opacity)),
+            style: StrokeStyle(lineWidth: PanelOverlayRingMetrics.lineWidth, lineJoin: .round)
+        )
+    }
+
+    private func ringPath(for rect: CGRect) -> Path? {
+        guard rect.width > PanelOverlayRingMetrics.inset * 2,
+              rect.height > PanelOverlayRingMetrics.inset * 2 else { return nil }
+        return Path(
+            roundedRect: PanelOverlayRingMetrics.pathRect(in: rect),
+            cornerRadius: PanelOverlayRingMetrics.cornerRadius
+        )
+    }
+}
+
 /// View that renders a Workspace's content using BonsplitView
 struct WorkspaceContentView: View {
     @ObservedObject var workspace: Workspace
@@ -158,6 +375,12 @@ struct WorkspaceContentView: View {
             if isMinimalMode {
                 bonsplitView
                     .ignoresSafeArea(.container, edges: .top)
+                    .overlay(alignment: .top) {
+                        if isWorkspaceInputActive {
+                            TitlebarDoubleClickMonitorView()
+                                .frame(height: WorkspaceTitlebarInteractionMetrics.minimalModeTopStripHeight)
+                        }
+                    }
             } else {
                 bonsplitView
             }

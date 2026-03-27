@@ -1571,6 +1571,7 @@ class TabManager: ObservableObject {
     /// Static so port ranges don't overlap across multiple windows (each window has its own TabManager).
     private static var nextPortOrdinal: Int = 0
     private static let initialWorkspaceGitProbeDelays: [TimeInterval] = [0, 0.5, 1.5, 3.0, 6.0, 10.0]
+    private static let workspaceGitMetadataPollInterval: TimeInterval = 30
     private nonisolated static let workspacePullRequestProbeTimeout: TimeInterval = 5.0
     @Published var selectedTabId: UUID? {
         willSet {
@@ -1697,6 +1698,7 @@ class TabManager: ObservableObject {
         }
     }
     var agentPIDSweepTimer: DispatchSourceTimer?
+    private var workspaceGitMetadataPollTimer: DispatchSourceTimer?
 #if DEBUG
     private var debugWorkspaceSwitchCounter: UInt64 = 0
     private var debugWorkspaceSwitchId: UInt64 = 0
@@ -1743,6 +1745,7 @@ class TabManager: ObservableObject {
         })
 
         startAgentPIDSweepTimer()
+        startWorkspaceGitMetadataPollTimer()
 
 #if DEBUG
         setupUITestFocusShortcutsIfNeeded()
@@ -1755,6 +1758,94 @@ class TabManager: ObservableObject {
     deinit {
         workspaceCycleCooldownTask?.cancel()
         agentPIDSweepTimer?.cancel()
+        workspaceGitMetadataPollTimer?.cancel()
+    }
+
+    /// Periodically refreshes git/PR metadata for tracked workspace branches so
+    /// remote GitHub state changes reach sidebar state even when the local
+    /// branch/directory does not change.
+    private func startWorkspaceGitMetadataPollTimer() {
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        let interval = Self.workspaceGitMetadataPollInterval
+        timer.schedule(deadline: .now() + interval, repeating: interval)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.refreshTrackedWorkspaceGitMetadata()
+            }
+        }
+        timer.resume()
+        workspaceGitMetadataPollTimer = timer
+    }
+
+    private func refreshTrackedWorkspaceGitMetadata() {
+        let activeProbeKeys = Set(workspaceGitProbeGenerationByKey.keys)
+
+        for workspace in tabs {
+            for panelId in trackedWorkspaceGitMetadataPollCandidatePanelIds(
+                in: workspace,
+                activeProbeKeys: activeProbeKeys
+            ) {
+                scheduleWorkspaceGitMetadataRefreshIfPossible(
+                    workspaceId: workspace.id,
+                    panelId: panelId,
+                    reason: "periodicPoll"
+                )
+            }
+        }
+    }
+
+    func refreshTrackedWorkspaceGitMetadataForTesting() {
+        refreshTrackedWorkspaceGitMetadata()
+    }
+
+    func trackedWorkspaceGitMetadataPollCandidatePanelIdsForTesting(workspaceId: UUID) -> Set<UUID> {
+        let activeProbeKeys = Set(workspaceGitProbeGenerationByKey.keys)
+        guard let workspace = tabs.first(where: { $0.id == workspaceId }) else {
+            return []
+        }
+        return trackedWorkspaceGitMetadataPollCandidatePanelIds(
+            in: workspace,
+            activeProbeKeys: activeProbeKeys
+        )
+    }
+
+    private func trackedWorkspaceGitMetadataPollCandidatePanelIds(
+        in workspace: Workspace,
+        activeProbeKeys: Set<WorkspaceGitProbeKey>
+    ) -> Set<UUID> {
+        var candidatePanelIds = Set(workspace.panelGitBranches.keys)
+        candidatePanelIds.formUnion(workspace.panelPullRequests.keys)
+
+        if candidatePanelIds.isEmpty,
+           let focusedPanelId = workspace.focusedPanelId,
+           workspace.gitBranch != nil || workspace.pullRequest != nil {
+            candidatePanelIds.insert(focusedPanelId)
+        }
+
+        return Set(candidatePanelIds.filter { panelId in
+            let probeKey = WorkspaceGitProbeKey(workspaceId: workspace.id, panelId: panelId)
+            guard !activeProbeKeys.contains(probeKey) else { return false }
+            return shouldPollTrackedWorkspaceGitMetadata(in: workspace, panelId: panelId)
+        })
+    }
+
+    private func shouldPollTrackedWorkspaceGitMetadata(in workspace: Workspace, panelId: UUID) -> Bool {
+        guard let branch = trackedWorkspaceGitBranch(in: workspace, panelId: panelId) else {
+            return true
+        }
+        return !Self.shouldSkipWorkspacePullRequestLookup(branch: branch)
+    }
+
+    private func trackedWorkspaceGitBranch(in workspace: Workspace, panelId: UUID) -> String? {
+        if let branch = workspace.panelGitBranches[panelId]?.branch {
+            return branch
+        }
+        if workspace.focusedPanelId == panelId {
+            return workspace.gitBranch?.branch
+        }
+        return nil
     }
 
     private func gitProbeDirectory(for workspace: Workspace, panelId: UUID) -> String? {
@@ -2298,6 +2389,9 @@ class TabManager: ObservableObject {
         directory: String,
         branch: String
     ) -> WorkspacePullRequestSnapshot {
+        guard !shouldSkipWorkspacePullRequestLookup(branch: branch) else {
+            return .notFound
+        }
         let repoSlugs = githubRepositorySlugs(directory: directory)
         guard !repoSlugs.isEmpty else {
             return .unsupportedRepository
@@ -2778,6 +2872,15 @@ class TabManager: ObservableObject {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    nonisolated static func shouldSkipWorkspacePullRequestLookup(branch: String) -> Bool {
+        switch normalizedBranchName(branch) {
+        case "main", "master":
+            return true
+        default:
+            return false
+        }
+    }
+
     func requestBackgroundWorkspaceLoad(for workspaceId: UUID) {
         guard !pendingBackgroundWorkspaceLoadIds.contains(workspaceId) else { return }
         var updated = pendingBackgroundWorkspaceLoadIds
@@ -2860,7 +2963,10 @@ class TabManager: ObservableObject {
     private func inheritedTerminalConfigForNewWorkspace(
         snapshot: WorkspaceCreationSnapshot
     ) -> ghostty_surface_config_s? {
-        if let sourceSurface = terminalPanelForWorkspaceConfigInheritanceSource(snapshot: snapshot)?.surface.surface {
+        if let panel = terminalPanelForWorkspaceConfigInheritanceSource(snapshot: snapshot),
+           let sourceSurface = panel.surface.liveSurfaceForGhosttyAccess(
+               reason: "tabManager.inheritedTerminalConfigForNewWorkspace"
+           ) {
             return cmuxInheritedSurfaceConfig(
                 sourceSurface: sourceSurface,
                 context: GHOSTTY_SURFACE_CONTEXT_TAB

@@ -21,8 +21,34 @@ func cmuxSurfaceContextName(_ context: ghostty_surface_context_e) -> String {
     }
 }
 
+private func cmuxPointerAppearsLive(_ pointer: UnsafeMutableRawPointer?) -> Bool {
+    guard let pointer,
+          malloc_zone_from_ptr(pointer) != nil else {
+        return false
+    }
+    return malloc_size(pointer) > 0
+}
+
+func cmuxSurfacePointerAppearsLive(_ surface: ghostty_surface_t) -> Bool {
+    // Best-effort check: reject pointers that no longer belong to an active
+    // malloc zone allocation. A Swift wrapper around `ghostty_surface_t` can
+    // remain non-nil after the backing native surface has already been freed.
+    cmuxPointerAppearsLive(surface)
+}
+
 func cmuxCurrentSurfaceFontSizePoints(_ surface: ghostty_surface_t) -> Float? {
+    guard cmuxSurfacePointerAppearsLive(surface) else {
+        return nil
+    }
+
     guard let quicklookFont = ghostty_surface_quicklook_font(surface) else {
+        return nil
+    }
+
+    // Best-effort check: reject unretained font pointers that no longer belong
+    // to a live malloc allocation. This does not prove the object is still a
+    // valid CTFont, but it filters out common fully-freed/unmapped cases.
+    guard cmuxPointerAppearsLive(quicklookFont) else {
         return nil
     }
 
@@ -57,6 +83,226 @@ func cmuxInheritedSurfaceConfig(
 #endif
 
     return config
+}
+
+// MARK: - cmux.json custom layout
+
+extension Workspace {
+
+    func applyCustomLayout(_ layout: CmuxLayoutNode, baseCwd: String) {
+        guard let rootPaneId = bonsplitController.allPaneIds.first else { return }
+
+        var leaves: [(paneId: PaneID, surfaces: [CmuxSurfaceDefinition])] = []
+        buildCustomLayoutTree(layout, inPane: rootPaneId, leaves: &leaves)
+
+        // First leaf reuses the initial terminal created by addWorkspace;
+        // subsequent leaves were created via newTerminalSplit which also seeds
+        // a placeholder terminal.
+        var focusPanelId: UUID?
+        for leaf in leaves {
+            populateCustomPane(leaf.paneId, surfaces: leaf.surfaces, baseCwd: baseCwd, focusPanelId: &focusPanelId)
+        }
+
+        let liveRoot = bonsplitController.treeSnapshot()
+        applyCustomDividerPositions(configNode: layout, liveNode: liveRoot)
+
+        if let focusPanelId {
+            focusPanel(focusPanelId)
+        }
+    }
+
+    private func buildCustomLayoutTree(
+        _ node: CmuxLayoutNode,
+        inPane paneId: PaneID,
+        leaves: inout [(paneId: PaneID, surfaces: [CmuxSurfaceDefinition])]
+    ) {
+        switch node {
+        case .pane(let pane):
+            leaves.append((paneId: paneId, surfaces: pane.surfaces))
+
+        case .split(let split):
+            guard split.children.count == 2 else {
+                NSLog("[CmuxConfig] split node requires exactly 2 children, got %d", split.children.count)
+                leaves.append((paneId: paneId, surfaces: []))
+                return
+            }
+
+            var anchorPanelId = bonsplitController
+                .tabs(inPane: paneId)
+                .compactMap { panelIdFromSurfaceId($0.id) }
+                .first
+
+            if anchorPanelId == nil {
+                anchorPanelId = newTerminalSurface(inPane: paneId, focus: false)?.id
+            }
+
+            guard let anchorPanelId,
+                  let newSplitPanel = newTerminalSplit(
+                      from: anchorPanelId,
+                      orientation: split.splitOrientation,
+                      insertFirst: false,
+                      focus: false
+                  ),
+                  let secondPaneId = self.paneId(forPanelId: newSplitPanel.id) else {
+                leaves.append((paneId: paneId, surfaces: []))
+                return
+            }
+
+            buildCustomLayoutTree(split.children[0], inPane: paneId, leaves: &leaves)
+            buildCustomLayoutTree(split.children[1], inPane: secondPaneId, leaves: &leaves)
+        }
+    }
+
+    private func populateCustomPane(
+        _ paneId: PaneID,
+        surfaces: [CmuxSurfaceDefinition],
+        baseCwd: String,
+        focusPanelId: inout UUID?
+    ) {
+        let existingPanelIds = bonsplitController
+            .tabs(inPane: paneId)
+            .compactMap { panelIdFromSurfaceId($0.id) }
+
+        guard !surfaces.isEmpty else { return }
+
+        let firstSurface = surfaces[0]
+        if let placeholderPanelId = existingPanelIds.first {
+            configureExistingSurface(
+                panelId: placeholderPanelId,
+                inPane: paneId,
+                surface: firstSurface,
+                baseCwd: baseCwd,
+                focusPanelId: &focusPanelId
+            )
+        }
+
+        for surfaceIndex in 1..<surfaces.count {
+            createNewSurface(
+                inPane: paneId,
+                surface: surfaces[surfaceIndex],
+                baseCwd: baseCwd,
+                focusPanelId: &focusPanelId
+            )
+        }
+    }
+
+    private func configureExistingSurface(
+        panelId: UUID,
+        inPane paneId: PaneID,
+        surface: CmuxSurfaceDefinition,
+        baseCwd: String,
+        focusPanelId: inout UUID?
+    ) {
+        switch surface.type {
+        case .terminal where surface.cwd != nil || surface.env != nil:
+            let resolvedCwd = CmuxConfigStore.resolveCwd(surface.cwd, relativeTo: baseCwd)
+            if let panel = newTerminalSurface(
+                inPane: paneId,
+                focus: false,
+                workingDirectory: resolvedCwd,
+                startupEnvironment: surface.env ?? [:]
+            ) {
+                _ = closePanel(panelId, force: true)
+                if let name = surface.name { setPanelCustomTitle(panelId: panel.id, title: name) }
+                if surface.focus == true { focusPanelId = panel.id }
+                if let command = surface.command { sendInputWhenReady(command + "\n", to: panel) }
+            }
+
+        case .terminal:
+            if let name = surface.name { setPanelCustomTitle(panelId: panelId, title: name) }
+            if surface.focus == true { focusPanelId = panelId }
+            if let command = surface.command, let terminal = terminalPanel(for: panelId) {
+                sendInputWhenReady(command + "\n", to: terminal)
+            }
+
+        case .browser:
+            let url = surface.url.flatMap { URL(string: $0) }
+            if let panel = newBrowserSurface(inPane: paneId, url: url, focus: false) {
+                _ = closePanel(panelId, force: true)
+                if let name = surface.name { setPanelCustomTitle(panelId: panel.id, title: name) }
+                if surface.focus == true { focusPanelId = panel.id }
+            }
+        }
+    }
+
+    private func createNewSurface(
+        inPane paneId: PaneID,
+        surface: CmuxSurfaceDefinition,
+        baseCwd: String,
+        focusPanelId: inout UUID?
+    ) {
+        switch surface.type {
+        case .terminal:
+            let resolvedCwd = CmuxConfigStore.resolveCwd(surface.cwd, relativeTo: baseCwd)
+            if let panel = newTerminalSurface(
+                inPane: paneId,
+                focus: false,
+                workingDirectory: resolvedCwd,
+                startupEnvironment: surface.env ?? [:]
+            ) {
+                if let name = surface.name { setPanelCustomTitle(panelId: panel.id, title: name) }
+                if surface.focus == true { focusPanelId = panel.id }
+                if let command = surface.command { sendInputWhenReady(command + "\n", to: panel) }
+            }
+
+        case .browser:
+            let url = surface.url.flatMap { URL(string: $0) }
+            if let panel = newBrowserSurface(inPane: paneId, url: url, focus: false) {
+                if let name = surface.name { setPanelCustomTitle(panelId: panel.id, title: name) }
+                if surface.focus == true { focusPanelId = panel.id }
+            }
+        }
+    }
+
+    private func applyCustomDividerPositions(
+        configNode: CmuxLayoutNode,
+        liveNode: ExternalTreeNode
+    ) {
+        switch (configNode, liveNode) {
+        case (.split(let configSplit), .split(let liveSplit)):
+            if let splitID = UUID(uuidString: liveSplit.id) {
+                _ = bonsplitController.setDividerPosition(
+                    CGFloat(configSplit.clampedSplitPosition),
+                    forSplit: splitID,
+                    fromExternal: true
+                )
+            }
+            if configSplit.children.count == 2 {
+                applyCustomDividerPositions(configNode: configSplit.children[0], liveNode: liveSplit.first)
+                applyCustomDividerPositions(configNode: configSplit.children[1], liveNode: liveSplit.second)
+            }
+        default:
+            break
+        }
+    }
+
+    private func sendInputWhenReady(_ text: String, to panel: TerminalPanel) {
+        if panel.surface.hasLiveSurface {
+            panel.sendInput(text)
+            return
+        }
+
+        var resolved = false
+        var observer: NSObjectProtocol?
+
+        observer = NotificationCenter.default.addObserver(
+            forName: .terminalSurfaceDidBecomeReady,
+            object: panel.surface,
+            queue: .main
+        ) { [weak panel] _ in
+            guard !resolved, let panel else { return }
+            resolved = true
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            panel.sendInput(text)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+            guard !resolved else { return }
+            resolved = true
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            NSLog("[CmuxConfig] surface not ready after 3s, dropping command (%d chars)", text.count)
+        }
+    }
 }
 
 struct SidebarStatusEntry {
@@ -6943,7 +7189,9 @@ final class Workspace: Identifiable, ObservableObject {
 
     private func rememberTerminalConfigInheritanceSource(_ terminalPanel: TerminalPanel) {
         lastTerminalConfigInheritancePanelId = terminalPanel.id
-        if let sourceSurface = terminalPanel.surface.surface,
+        if let sourceSurface = terminalPanel.surface.liveSurfaceForGhosttyAccess(
+            reason: "workspace.rememberConfigInheritanceSource"
+        ),
            let runtimePoints = cmuxCurrentSurfaceFontSizePoints(sourceSurface) {
             let existing = terminalInheritanceFontPointsByPanelId[terminalPanel.id]
             if existing == nil || abs((existing ?? runtimePoints) - runtimePoints) > 0.05 {
@@ -7035,13 +7283,25 @@ final class Workspace: Identifiable, ObservableObject {
         preferredPanelId: UUID? = nil,
         inPane preferredPaneId: PaneID? = nil
     ) -> ghostty_surface_config_s? {
+        var staleRootedFontFallback: Float?
+
         // Walk candidates in priority order and use the first panel with a live surface.
         // This avoids returning nil when the top candidate exists but is not attached yet.
         for terminalPanel in terminalPanelConfigInheritanceCandidates(
             preferredPanelId: preferredPanelId,
             inPane: preferredPaneId
         ) {
-            guard let sourceSurface = terminalPanel.surface.surface else { continue }
+            let rootedFontFallback = terminalInheritanceFontPointsByPanelId[terminalPanel.id]
+            guard let sourceSurface = terminalPanel.surface.liveSurfaceForGhosttyAccess(
+                reason: "workspace.inheritedTerminalConfig"
+            ) else {
+                if staleRootedFontFallback == nil,
+                   let rootedFontFallback,
+                   rootedFontFallback > 0 {
+                    staleRootedFontFallback = rootedFontFallback
+                }
+                continue
+            }
             var config = cmuxInheritedSurfaceConfig(
                 sourceSurface: sourceSurface,
                 context: GHOSTTY_SURFACE_CONTEXT_SPLIT
@@ -7061,7 +7321,7 @@ final class Workspace: Identifiable, ObservableObject {
             return config
         }
 
-        if let fallbackFontPoints = lastTerminalConfigInheritanceFontPoints {
+        if let fallbackFontPoints = staleRootedFontFallback ?? lastTerminalConfigInheritanceFontPoints {
             var config = ghostty_surface_config_new()
             config.font_size = fallbackFontPoints
 #if DEBUG

@@ -204,6 +204,9 @@ final class TerminalPanel: Panel, ObservableObject {
     }
 #endif
 
+    func sendInput(_ text: String) {
+        surface.sendInput(text)
+    }
     func performBindingAction(_ action: String) -> Bool {
         surface.performBindingAction(action)
     }

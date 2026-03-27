@@ -91,7 +91,7 @@ for arg in "$@"; do
             RESUME_SESSION_ID="${arg#--session-id=}"
             NORMALIZED_ARGS+=("$arg")
             ;;
-        --resume|--session-id)
+        --resume|--session-id|-r)
             SKIP_SESSION_ID=true
             EXPECT_SESSION_ID_VALUE=1
             NORMALIZED_ARGS+=("$arg")
