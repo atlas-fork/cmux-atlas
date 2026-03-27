@@ -1550,6 +1550,41 @@ class GhosttyApp {
         "U+1100-U+11FF",  // Hangul Jamo
     ]
 
+    private struct UserFontConfigSummary {
+        var containsCodepointMap = false
+        var effectiveFontFamilies: [String] = []
+
+        var hasExplicitFontFamilyFallbackChain: Bool {
+            effectiveFontFamilies.count > 1
+        }
+
+        mutating func applyFontCodepointMap(_ value: String) {
+            if value.isEmpty {
+                containsCodepointMap = false
+                return
+            }
+
+            guard value.contains("=") else {
+                return
+            }
+
+            containsCodepointMap = true
+        }
+
+        mutating func recordFontFamily(_ value: String) {
+            if value.isEmpty {
+                effectiveFontFamilies.removeAll()
+                return
+            }
+
+            guard !effectiveFontFamilies.contains(value) else {
+                return
+            }
+
+            effectiveFontFamilies.append(value)
+        }
+    }
+
     /// Returns (range, font) pairs for CJK font fallback based on the system's
     /// preferred languages, or nil if no CJK language is detected. Each language
     /// only maps its own script ranges to avoid assigning glyphs to a font that
@@ -2484,7 +2519,7 @@ class GhosttyApp {
                   let surfaceId = surfaceView.terminalSurface?.id else { return true }
             let pwd = action.action.pwd.pwd.flatMap { String(cString: $0) } ?? ""
             DispatchQueue.main.async {
-                AppDelegate.shared?.tabManager?.updateSurfaceDirectory(
+                AppDelegate.shared?.tabManagerFor(tabId: tabId)?.updateSurfaceDirectory(
                     tabId: tabId,
                     surfaceId: surfaceId,
                     directory: pwd
