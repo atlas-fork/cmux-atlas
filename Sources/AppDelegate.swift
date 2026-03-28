@@ -1830,6 +1830,42 @@ func cmuxOwningGhosttyView(for responder: NSResponder?) -> GhosttyNSView? {
     return nil
 }
 
+func isCommandPaletteFocusStealingTerminalOrBrowserResponder(_ responder: NSResponder?) -> Bool {
+    guard let responder else { return false }
+
+    if responder is GhosttyNSView || responder is WKWebView {
+        return true
+    }
+
+    if let textView = responder as? NSTextView,
+       !textView.isFieldEditor,
+       let delegateView = textView.delegate as? NSView {
+        return isCommandPaletteFocusStealingTerminalOrBrowserView(delegateView)
+    }
+
+    if let view = responder as? NSView {
+        return isCommandPaletteFocusStealingTerminalOrBrowserView(view)
+    }
+
+    return false
+}
+
+private func isCommandPaletteFocusStealingTerminalOrBrowserView(_ view: NSView) -> Bool {
+    if view is GhosttyNSView || view is WKWebView {
+        return true
+    }
+
+    var current: NSView? = view.superview
+    while let candidate = current {
+        if candidate is GhosttyNSView || candidate is WKWebView {
+            return true
+        }
+        current = candidate.superview
+    }
+
+    return false
+}
+
 private func cmuxOwningGhosttyView(for view: NSView) -> GhosttyNSView? {
     if let ghosttyView = view as? GhosttyNSView {
         return ghosttyView
