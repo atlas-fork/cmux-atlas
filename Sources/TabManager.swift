@@ -2186,6 +2186,74 @@ class TabManager: ObservableObject {
         }
     }
 
+    private func refreshTrackedWorkspaceGitMetadata() {
+        let activeProbeKeys = Set(workspaceGitProbeGenerationByKey.keys)
+        for workspace in tabs {
+            for panelId in trackedWorkspaceGitMetadataPollCandidatePanelIds(
+                in: workspace,
+                activeProbeKeys: activeProbeKeys
+            ) {
+                scheduleWorkspaceGitMetadataRefreshIfPossible(
+                    workspaceId: workspace.id,
+                    panelId: panelId,
+                    reason: "periodicPoll"
+                )
+            }
+        }
+    }
+
+    func refreshTrackedWorkspaceGitMetadataForTesting() {
+        refreshTrackedWorkspaceGitMetadata()
+    }
+
+    func trackedWorkspaceGitMetadataPollCandidatePanelIdsForTesting(workspaceId: UUID) -> Set<UUID> {
+        let activeProbeKeys = Set(workspaceGitProbeGenerationByKey.keys)
+        guard let workspace = tabs.first(where: { $0.id == workspaceId }) else {
+            return []
+        }
+        return trackedWorkspaceGitMetadataPollCandidatePanelIds(
+            in: workspace,
+            activeProbeKeys: activeProbeKeys
+        )
+    }
+
+    private func trackedWorkspaceGitMetadataPollCandidatePanelIds(
+        in workspace: Workspace,
+        activeProbeKeys: Set<WorkspaceGitProbeKey>
+    ) -> Set<UUID> {
+        var candidatePanelIds = Set(workspace.panelGitBranches.keys)
+        candidatePanelIds.formUnion(workspace.panelPullRequests.keys)
+
+        if candidatePanelIds.isEmpty,
+           let focusedPanelId = workspace.focusedPanelId,
+           workspace.gitBranch != nil || workspace.pullRequest != nil {
+            candidatePanelIds.insert(focusedPanelId)
+        }
+
+        return Set(candidatePanelIds.filter { panelId in
+            let probeKey = WorkspaceGitProbeKey(workspaceId: workspace.id, panelId: panelId)
+            guard !activeProbeKeys.contains(probeKey) else { return false }
+            return shouldPollTrackedWorkspaceGitMetadata(in: workspace, panelId: panelId)
+        })
+    }
+
+    private func shouldPollTrackedWorkspaceGitMetadata(in workspace: Workspace, panelId: UUID) -> Bool {
+        guard let branch = trackedWorkspaceGitBranch(in: workspace, panelId: panelId) else {
+            return true
+        }
+        return !Self.shouldSkipWorkspacePullRequestLookup(branch: branch)
+    }
+
+    private func trackedWorkspaceGitBranch(in workspace: Workspace, panelId: UUID) -> String? {
+        if let branch = workspace.panelGitBranches[panelId]?.branch {
+            return branch
+        }
+        if workspace.focusedPanelId == panelId {
+            return workspace.gitBranch?.branch
+        }
+        return nil
+    }
+
     private func applyWorkspaceGitMetadataSnapshot(
         _ snapshot: InitialWorkspaceGitMetadataSnapshot,
         generation: UUID,
@@ -2321,6 +2389,9 @@ class TabManager: ObservableObject {
         directory: String,
         branch: String
     ) -> WorkspacePullRequestSnapshot {
+        guard !shouldSkipWorkspacePullRequestLookup(branch: branch) else {
+            return .notFound
+        }
         let repoSlugs = githubRepositorySlugs(directory: directory)
         guard !repoSlugs.isEmpty else {
             return .unsupportedRepository
@@ -2611,6 +2682,69 @@ class TabManager: ObservableObject {
         }
     }
 
+    private nonisolated static let fallbackCommandSearchDirectories: [String] = [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/opt/local/bin",
+    ]
+
+    nonisolated static func resolvedCommandPathForTesting(
+        executable: String,
+        environment: [String: String],
+        fallbackDirectories: [String]
+    ) -> String? {
+        resolvedCommandPath(
+            executable: executable,
+            environment: environment,
+            fallbackDirectories: fallbackDirectories
+        )
+    }
+
+    private nonisolated static func resolvedCommandPath(
+        executable: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        fallbackDirectories: [String] = fallbackCommandSearchDirectories
+    ) -> String? {
+        guard !executable.isEmpty else { return nil }
+        let fileManager = FileManager.default
+        if executable.contains("/") {
+            return fileManager.isExecutableFile(atPath: executable) ? executable : nil
+        }
+
+        var searchDirectories: [String] = []
+        var seenDirectories: Set<String> = []
+
+        func appendSearchPath(_ path: String?) {
+            guard let path else { return }
+            for rawComponent in path.split(separator: ":") {
+                let component = String(rawComponent).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !component.isEmpty,
+                      seenDirectories.insert(component).inserted else {
+                    continue
+                }
+                searchDirectories.append(component)
+            }
+        }
+
+        appendSearchPath(environment["PATH"])
+        appendSearchPath(getenv("PATH").map { String(cString: $0) })
+        if let bundledBinPath = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
+            appendSearchPath(bundledBinPath)
+        }
+        fallbackDirectories.forEach { appendSearchPath($0) }
+        appendSearchPath("/usr/bin:/bin:/usr/sbin:/sbin")
+
+        for directory in searchDirectories {
+            let candidate = URL(fileURLWithPath: directory, isDirectory: true)
+                .appendingPathComponent(executable)
+                .path
+            if fileManager.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
     private nonisolated static func runCommand(
         directory: String,
         executable: String,
@@ -2799,6 +2933,15 @@ class TabManager: ObservableObject {
     private nonisolated static func normalizedBranchName(_ branch: String?) -> String? {
         let trimmed = branch?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    nonisolated static func shouldSkipWorkspacePullRequestLookup(branch: String) -> Bool {
+        switch normalizedBranchName(branch) {
+        case "main", "master":
+            return true
+        default:
+            return false
+        }
     }
 
     func requestBackgroundWorkspaceLoad(for workspaceId: UUID) {
