@@ -3133,6 +3133,7 @@ final class TerminalSurfaceRegistry {
 
     private let lock = NSLock()
     private let surfaces = NSHashTable<AnyObject>.weakObjects()
+    private var runtimeSurfaceOwners: [UInt: UUID] = [:]
 
     private init() {}
 
@@ -3140,6 +3141,26 @@ final class TerminalSurfaceRegistry {
         lock.lock()
         defer { lock.unlock() }
         surfaces.add(surface)
+    }
+
+    func registerRuntimeSurface(_ surface: ghostty_surface_t, ownerId: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        runtimeSurfaceOwners[UInt(bitPattern: surface)] = ownerId
+    }
+
+    func unregisterRuntimeSurface(_ surface: ghostty_surface_t, ownerId: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        let key = UInt(bitPattern: surface)
+        guard runtimeSurfaceOwners[key] == ownerId else { return }
+        runtimeSurfaceOwners.removeValue(forKey: key)
+    }
+
+    func runtimeSurfaceOwnerId(_ surface: ghostty_surface_t) -> UUID? {
+        lock.lock()
+        defer { lock.unlock() }
+        return runtimeSurfaceOwners[UInt(bitPattern: surface)]
     }
 
     func allSurfaces() -> [TerminalSurface] {
@@ -3169,6 +3190,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
 
     private(set) var surface: ghostty_surface_t?
     private weak var attachedView: GhosttyNSView?
+    var hasLiveSurface: Bool { surface != nil && portalLifecycleState == .live }
     /// Whether the terminal surface view is currently attached to a window.
     ///
     /// Use the hosted view rather than the inner surface view, since the surface can be
@@ -3216,6 +3238,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
     private var lastFocusState: Bool = false
 #if DEBUG
     private var needsConfirmCloseOverrideForTesting: Bool?
+    private var runtimeSurfaceFreedOutOfBandForTesting = false
 #endif
     private enum PortalLifecycleState: String {
         case live
@@ -3591,12 +3614,23 @@ final class TerminalSurface: Identifiable, ObservableObject {
         surfaceCallbackContext = nil
 
         let surfaceToFree = surface
+        if let surfaceToFree {
+            TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
+        }
         surface = nil
 
         guard let surfaceToFree else {
             callbackContext?.release()
             return
         }
+
+#if DEBUG
+        if runtimeSurfaceFreedOutOfBandForTesting {
+            runtimeSurfaceFreedOutOfBandForTesting = false
+            callbackContext?.release()
+            return
+        }
+#endif
 
         Task { @MainActor in
             // Keep free behavior aligned with deinit: perform the runtime teardown on
@@ -3978,6 +4012,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
             return
         }
         guard let createdSurface = surface else { return }
+        TerminalSurfaceRegistry.shared.registerRuntimeSurface(createdSurface, ownerId: id)
         recordRuntimeSurfaceCreation()
 
         // Session scrollback replay must be one-shot. Reusing it on a later runtime
@@ -4328,8 +4363,29 @@ final class TerminalSurface: Identifiable, ObservableObject {
             return
         }
 
+        TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
         surface = nil
         ghostty_surface_free(surfaceToFree)
+        callbackContext?.release()
+    }
+
+    /// Test-only helper to simulate a stale Swift wrapper whose native surface
+    /// was already freed out-of-band.
+    @MainActor
+    func replaceSurfaceWithFreedPointerForTesting() {
+        guard !runtimeSurfaceFreedOutOfBandForTesting else { return }
+
+        let callbackContext = surfaceCallbackContext
+        surfaceCallbackContext = nil
+
+        guard let surfaceToFree = surface else {
+            callbackContext?.release()
+            return
+        }
+
+        TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
+        ghostty_surface_free(surfaceToFree)
+        runtimeSurfaceFreedOutOfBandForTesting = true
         callbackContext?.release()
     }
 #endif
@@ -4345,6 +4401,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // before this object is fully deallocated will see nil and bail out,
         // rather than passing a freed pointer to ghostty_surface_refresh (#432).
         let surfaceToFree = surface
+        if let surfaceToFree {
+            TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
+        }
         surface = nil
 
         guard let surfaceToFree else {
@@ -4357,6 +4416,14 @@ final class TerminalSurface: Identifiable, ObservableObject {
             callbackContext?.release()
             return
         }
+
+#if DEBUG
+        if runtimeSurfaceFreedOutOfBandForTesting {
+            runtimeSurfaceFreedOutOfBandForTesting = false
+            callbackContext?.release()
+            return
+        }
+#endif
 
 #if DEBUG
         let surfaceToken = String(id.uuidString.prefix(5))

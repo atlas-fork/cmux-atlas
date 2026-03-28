@@ -21,7 +21,26 @@ func cmuxSurfaceContextName(_ context: ghostty_surface_context_e) -> String {
     }
 }
 
+private func cmuxPointerAppearsLive(_ pointer: UnsafeMutableRawPointer?) -> Bool {
+    guard let pointer,
+          malloc_zone_from_ptr(pointer) != nil else {
+        return false
+    }
+    return malloc_size(pointer) > 0
+}
+
+func cmuxSurfacePointerAppearsLive(_ surface: ghostty_surface_t) -> Bool {
+    // Best-effort check: reject pointers that no longer belong to an active
+    // malloc zone allocation. A Swift wrapper around `ghostty_surface_t` can
+    // remain non-nil after the backing native surface has already been freed.
+    cmuxPointerAppearsLive(surface)
+}
+
 func cmuxCurrentSurfaceFontSizePoints(_ surface: ghostty_surface_t) -> Float? {
+    guard cmuxSurfacePointerAppearsLive(surface) else {
+        return nil
+    }
+
     guard let quicklookFont = ghostty_surface_quicklook_font(surface) else {
         return nil
     }
@@ -7466,6 +7485,7 @@ final class Workspace: Identifiable, ObservableObject {
             inPane: preferredPaneId
         ) {
             guard let sourceSurface = terminalPanel.surface.surface else { continue }
+            guard cmuxSurfacePointerAppearsLive(sourceSurface) else { continue }
             var config = cmuxInheritedSurfaceConfig(
                 sourceSurface: sourceSurface,
                 context: GHOSTTY_SURFACE_CONTEXT_SPLIT
