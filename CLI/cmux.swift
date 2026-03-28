@@ -10514,7 +10514,7 @@ struct CMUXCLI {
                     resumeArgs += " --cwd=\(cwd) --project=\(cwd)"
                 }
                 _ = try? sendV1Command("prefill_session_resume \(resumeArgs)", client: client)
-                var clearActiveArgs = "claude_code --tab=\(resolvedWorkspace)"
+                var clearActiveArgs = "claude_code \(sessionId) --tab=\(resolvedWorkspace)"
                 if let surface = resolvedSurface, !surface.isEmpty {
                     clearActiveArgs += " --surface=\(surface)"
                 }

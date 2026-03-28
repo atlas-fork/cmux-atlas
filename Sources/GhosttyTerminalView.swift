@@ -7739,6 +7739,10 @@ final class GhosttySurfaceScrollView: NSView {
             tabId: terminalSurface.tabId,
             surfaceId: terminalSurface.id,
             searchState: searchState,
+            canApplyFocusRequest: { [weak self] in
+                guard let self else { return false }
+                return self.searchFocusTarget == .searchField
+            },
             onMoveFocusToTerminal: { [weak self] in
                 self?.searchFocusTarget = .terminal
                 self?.moveFocus()
