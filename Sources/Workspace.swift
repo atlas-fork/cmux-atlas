@@ -6746,6 +6746,7 @@ final class Workspace: Identifiable, ObservableObject {
     func registerActiveAISession(panelId: UUID, snapshot: ActiveAISessionSnapshot) {
         guard panels[panelId]?.panelType == .terminal else { return }
         activeAISessions[panelId] = snapshot
+        MemoryUsageStore.shared.requestImmediateRefresh()
     }
 
     func clearActiveAISession(panelId: UUID, agentType: AIAgentType? = nil, sessionId: String? = nil) {
@@ -6759,6 +6760,7 @@ final class Workspace: Identifiable, ObservableObject {
             return
         }
         activeAISessions.removeValue(forKey: panelId)
+        MemoryUsageStore.shared.requestImmediateRefresh()
     }
 
     func activeAISession(panelId: UUID, agentType: AIAgentType? = nil) -> ActiveAISessionSnapshot? {

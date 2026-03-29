@@ -2,6 +2,11 @@
 
 All notable changes to cmux are documented here.
 
+## [1.38.1-atlas.5] - 2026-03-29
+
+### Fixed
+- Refresh memory usage immediately when terminal TTY registration or Claude/Codex live-session tracking changes, so newly restored AI tabs do not lag behind in the sidebar RAM footer
+
 ## [1.38.1-atlas.4] - 2026-03-29
 
 ### Added

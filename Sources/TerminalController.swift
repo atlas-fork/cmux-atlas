@@ -15309,6 +15309,7 @@ class TerminalController {
                 guard validSurfaceIds.contains(scope.panelId) else { return }
                 tab.surfaceTTYNames[scope.panelId] = ttyName
                 PortScanner.shared.registerTTY(workspaceId: scope.workspaceId, panelId: scope.panelId, ttyName: ttyName)
+                MemoryUsageStore.shared.requestImmediateRefresh()
             }
             return "OK"
         }
@@ -15348,6 +15349,7 @@ class TerminalController {
 
             tab.surfaceTTYNames[surfaceId] = ttyName
             PortScanner.shared.registerTTY(workspaceId: tab.id, panelId: surfaceId, ttyName: ttyName)
+            MemoryUsageStore.shared.requestImmediateRefresh()
         }
         return result
     }
