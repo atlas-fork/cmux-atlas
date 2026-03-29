@@ -186,7 +186,8 @@ final class TerminalPanel: Panel, ObservableObject {
         surface.sendCommand(command)
     }
 
-    func prefillResumeAction(_ snapshot: RestoredTerminalActionSnapshot) {
+    @discardableResult
+    func prefillResumeAction(_ snapshot: RestoredTerminalActionSnapshot) -> Bool {
         let permissiveModeEnabled: Bool
         switch snapshot.agentType {
         case .claudeCode:
@@ -194,8 +195,24 @@ final class TerminalPanel: Panel, ObservableObject {
         case .codex:
             permissiveModeEnabled = AIQuickLaunchController.shared.permissiveModeEnabled(for: .codex)
         }
-        guard let command = snapshot.resumeCommand(permissiveModeEnabled: permissiveModeEnabled) else { return }
+        guard let command = snapshot.resumeCommand(permissiveModeEnabled: permissiveModeEnabled) else {
+            sentryCaptureWarning(
+                "AI resume command missing",
+                category: "ai_resume",
+                data: [
+                    "agentType": snapshot.agentType.rawValue,
+                    "hasSessionId": snapshot.sessionId != nil,
+                    "workingDirectory": snapshot.workingDirectory ?? "",
+                    "projectPath": snapshot.projectPath ?? "",
+                    "panelId": id.uuidString,
+                    "workspaceId": workspaceId.uuidString,
+                ],
+                contextKey: "ai_resume_command_missing"
+            )
+            return false
+        }
         sendText(command)
+        return true
     }
 
 #if DEBUG
