@@ -191,7 +191,11 @@ enum SidebarRemoteErrorCopySupport {
 }
 
 func sidebarSelectedWorkspaceBackgroundNSColor(for colorScheme: ColorScheme) -> NSColor {
-    cmuxAccentNSColor(for: colorScheme)
+    if let hex = UserDefaults.standard.string(forKey: "sidebarSelectionColorHex"),
+       let parsed = NSColor(hex: hex) {
+        return parsed
+    }
+    return cmuxAccentNSColor(for: colorScheme)
 }
 
 func sidebarSelectedWorkspaceForegroundNSColor(opacity: CGFloat) -> NSColor {
@@ -414,11 +418,18 @@ final class SidebarState: ObservableObject {
 }
 
 enum SidebarResizeInteraction {
-    static let handleWidth: CGFloat = 6
-    static let hitInset: CGFloat = 3
+    // Keep a generous drag target inside the sidebar itself, but make the
+    // terminal-side overlap very small so column-0 text selection still wins.
+    static let sidebarSideHitWidth: CGFloat = 6
+    // 4 pt matches the 4 pt padding used in GhosttySurfaceScrollView drop zone overlays
+    // (dropZoneOverlayFrame). This prevents column-0 text near the leading edge from
+    // accidentally triggering the sidebar resize when interacting with leftmost content.
+    static let contentSideHitWidth: CGFloat = 4
 
     static var hitWidthPerSide: CGFloat {
-        hitInset + (handleWidth / 2)
+        // Current sidebar resize routing still consumes a symmetric hit width, so
+        // bias toward the smaller content-side overlap until asymmetric hit-testing lands.
+        contentSideHitWidth
     }
 }
 
@@ -1518,6 +1529,7 @@ struct ContentView: View {
     @EnvironmentObject var notificationStore: TerminalNotificationStore
     @EnvironmentObject var sidebarState: SidebarState
     @EnvironmentObject var sidebarSelectionState: SidebarSelectionState
+    @EnvironmentObject var cmuxConfigStore: CmuxConfigStore
     @State private var sidebarWidth: CGFloat = 200
     @State private var hoveredResizerHandles: Set<SidebarResizerHandle> = []
     @State private var isResizerDragging = false
@@ -2176,7 +2188,7 @@ struct ContentView: View {
     }
 
     private var effectiveTitlebarPadding: CGFloat {
-        isMinimalMode ? 0 : titlebarPadding
+        isMinimalMode ? -titlebarPadding : titlebarPadding
     }
 
     private var terminalContent: some View {
@@ -2319,6 +2331,7 @@ struct ContentView: View {
         .frame(height: titlebarPadding)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
+        .background(TitlebarDoubleClickMonitorView())
         .background({
             // The terminal area has two stacked semi-transparent layers: the Bonsplit
             // container chrome background plus Ghostty's own Metal-rendered background.
@@ -2335,6 +2348,12 @@ struct ContentView: View {
                 .fill(Color(nsColor: .separatorColor))
                 .frame(height: 1)
         }
+    }
+
+    private func syncTrafficLightInset() {
+        // The upstream merge expects a newer Bonsplit API with a configurable
+        // tab-bar leading inset. Our current Bonsplit revision does not expose
+        // that knob, so keep this as a no-op until the submodule catches up.
     }
 
     private func updateTitlebarText() {
@@ -2517,6 +2536,7 @@ struct ContentView: View {
             syncSidebarSelectedWorkspaceIds()
             applyUITestSidebarSelectionIfNeeded(tabs: tabManager.tabs)
             updateTitlebarText()
+            syncTrafficLightInset()
 
             // Startup recovery (#399): if session restore or a race condition leaves the
             // view in a broken state (empty tabs, no selection, unmounted workspaces),
@@ -2939,6 +2959,11 @@ struct ContentView: View {
                 TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronizeForAllWindows()
             }
             updateSidebarResizerBandState()
+            syncTrafficLightInset()
+        })
+
+        view = AnyView(view.onChange(of: isMinimalMode) { _, _ in
+            syncTrafficLightInset()
         })
 
         view = AnyView(view.onChange(of: sidebarState.persistedWidth) { newValue in
@@ -2970,11 +2995,11 @@ struct ContentView: View {
         view = AnyView(view.background(WindowAccessor { [sidebarBlendMode, bgGlassEnabled, bgGlassTintHex, bgGlassTintOpacity] window in
             window.identifier = NSUserInterfaceItemIdentifier(windowIdentifier)
             window.titlebarAppearsTransparent = true
-            // Do not make the entire background draggable; it interferes with drag gestures
-            // like sidebar tab reordering in multi-window mode.
+            // Keep window immovable; the sidebar's WindowDragHandleView handles
+            // drag-to-move via performDrag with temporary movable override.
+            // isMovableByWindowBackground=true breaks tab reordering, and
+            // isMovable=true blocks clicks on sidebar buttons in minimal mode.
             window.isMovableByWindowBackground = false
-            // Keep the window immovable by default so titlebar controls (like the folder icon)
-            // cannot accidentally initiate native window drags.
             window.isMovable = false
             window.styleMask.insert(.fullSizeContentView)
 
@@ -4525,7 +4550,10 @@ struct ContentView: View {
     }
 
     private func commandPaletteCommandsFingerprint(commandsContext: CommandPaletteCommandsContext) -> Int {
-        commandsContext.snapshot.fingerprint()
+        var hasher = Hasher()
+        hasher.combine(commandsContext.snapshot.fingerprint())
+        hasher.combine(cmuxConfigStore.configRevision)
+        return hasher.finalize()
     }
 
     private func commandPaletteSwitcherEntriesFingerprint(includeSurfaces: Bool) -> Int {
@@ -5832,7 +5860,35 @@ struct ContentView: View {
             )
         )
 
+        let cmuxConfigDefaultSubtitle = constant(String(localized: "command.cmuxConfig.subtitle", defaultValue: "cmux.json"))
+        for command in cmuxConfigStore.loadedCommands {
+            let commandName = sanitizeCmuxConfigPaletteText(command.name)
+            let subtitle = command.description
+                .map { sanitizeCmuxConfigPaletteText($0) }
+                .flatMap { $0.isEmpty ? nil : constant($0) }
+                ?? cmuxConfigDefaultSubtitle
+            contributions.append(
+                CommandPaletteCommandContribution(
+                    commandId: command.id,
+                    title: constant(String(localized: "command.cmuxConfig.customTitle", defaultValue: "Custom: \(commandName)")),
+                    subtitle: subtitle,
+                    keywords: command.keywords ?? []
+                )
+            )
+        }
+
         return contributions
+    }
+
+    private func sanitizeCmuxConfigPaletteText(_ text: String) -> String {
+        let dangerous: Set<Unicode.Scalar> = [
+            "\u{200B}", "\u{200C}", "\u{200D}", "\u{200E}", "\u{200F}",
+            "\u{202A}", "\u{202B}", "\u{202C}", "\u{202D}", "\u{202E}",
+            "\u{2066}", "\u{2067}", "\u{2068}", "\u{2069}",
+            "\u{FEFF}",
+        ]
+        let filtered = String(text.unicodeScalars.filter { !dangerous.contains($0) })
+        return filtered.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func registerCommandPaletteHandlers(_ registry: inout CommandPaletteHandlerRegistry) {
@@ -6161,6 +6217,24 @@ struct ContentView: View {
                   tabManager.equalizeSplits(tabId: workspace.id) else {
                 NSSound.beep()
                 return
+            }
+        }
+
+        for command in cmuxConfigStore.loadedCommands {
+            let captured = command
+            let sourcePath = cmuxConfigStore.commandSourcePaths[command.id]
+            let globalPath = cmuxConfigStore.globalConfigPath
+            registry.register(commandId: command.id) {
+                let rawCwd = tabManager.selectedWorkspace?.currentDirectory
+                let baseCwd = (rawCwd?.isEmpty == false) ? rawCwd!
+                    : FileManager.default.homeDirectoryForCurrentUser.path
+                CmuxConfigExecutor.execute(
+                    command: captured,
+                    tabManager: tabManager,
+                    baseCwd: baseCwd,
+                    configSourcePath: sourcePath,
+                    globalConfigPath: globalPath
+                )
             }
         }
     }
@@ -8419,6 +8493,7 @@ struct VerticalTabsSidebar: View {
                     // drag-to-move and double-click action (zoom/minimize).
                     WindowDragHandleView()
                         .frame(height: trafficLightPadding)
+                        .background(TitlebarDoubleClickMonitorView())
                 }
                 .overlay(alignment: .topLeading) {
                     if isMinimalMode {
@@ -9438,7 +9513,7 @@ private struct SidebarMemoryUsageButton: View {
     }
 
     private var footerValueText: String {
-        let bytes = memoryUsageStore.snapshot.appResidentBytes
+        let bytes = memoryUsageStore.snapshot.footerResidentBytes
         guard bytes > 0 else {
             return String(localized: "memory.footer.loading", defaultValue: "RAM --")
         }
@@ -10989,9 +11064,15 @@ enum SidebarTrailingAccessoryWidthPolicy {
 // the parent rebuilds with unchanged values. Without this, every TabManager
 // or NotificationStore publish causes ALL tab items to re-evaluate (~18% of
 // main thread during typing). If you add new properties, update == below.
+// Reactive workspace state inside the row must not rely on parent diffs alone:
+// `.equatable()` can otherwise leave sidebar badges/details stale until an
+// unrelated parent change sneaks through. Keep the workspace reference plain
+// and bridge its objectWillChange into local state instead.
 // Do NOT add @EnvironmentObject or new @Binding without updating ==.
 // Do NOT remove .equatable() from the ForEach call site in VerticalTabsSidebar.
 private struct TabItemView: View, Equatable {
+    private static let workspaceObservationCoalesceInterval: RunLoop.SchedulerTimeType.Stride = .milliseconds(40)
+
     // Closures, Bindings, and object references are excluded from ==
     // because they're recreated every parent eval but don't affect rendering.
     nonisolated static func == (lhs: TabItemView, rhs: TabItemView) -> Bool {
@@ -11017,7 +11098,7 @@ private struct TabItemView: View, Equatable {
     let tabManager: TabManager
     let notificationStore: TerminalNotificationStore
     @Environment(\.colorScheme) private var colorScheme
-    @ObservedObject var tab: Tab
+    let tab: Tab
     let index: Int
     let isActive: Bool
     let workspaceShortcutDigit: Int?
@@ -11037,6 +11118,7 @@ private struct TabItemView: View, Equatable {
     let remoteContextMenuWorkspaceIds: [UUID]
     let allRemoteContextMenuTargetsConnecting: Bool
     let allRemoteContextMenuTargetsDisconnected: Bool
+    @State private var workspaceObservationGeneration: UInt64 = 0
     @State private var isHovering = false
     @State private var rowHeight: CGFloat = 1
     @AppStorage(ShortcutHintDebugSettings.sidebarHintXKey) private var sidebarShortcutHintXOffset = ShortcutHintDebugSettings.defaultSidebarHintX
@@ -11049,6 +11131,8 @@ private struct TabItemView: View, Equatable {
     @AppStorage("sidebarShowPullRequest") private var sidebarShowPullRequest = true
     @AppStorage(BrowserLinkOpenSettings.openSidebarPullRequestLinksInCmuxBrowserKey)
     private var openSidebarPullRequestLinksInCmuxBrowser = BrowserLinkOpenSettings.defaultOpenSidebarPullRequestLinksInCmuxBrowser
+    @AppStorage(BrowserLinkOpenSettings.openSidebarPortLinksInCmuxBrowserKey)
+    private var openSidebarPortLinksInCmuxBrowser = BrowserLinkOpenSettings.defaultOpenSidebarPortLinksInCmuxBrowser
     @AppStorage("sidebarShowSSH") private var sidebarShowSSH = true
     @AppStorage("sidebarShowPorts") private var sidebarShowPorts = true
     @AppStorage("sidebarShowLog") private var sidebarShowLog = true
@@ -11058,6 +11142,8 @@ private struct TabItemView: View, Equatable {
     private var sidebarHideAllDetails = SidebarWorkspaceDetailSettings.defaultHideAllDetails
     @AppStorage(SidebarActiveTabIndicatorSettings.styleKey)
     private var activeTabIndicatorStyleRaw = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
+    @AppStorage("sidebarSelectionColorHex") private var sidebarSelectionColorHex: String?
+    @AppStorage("sidebarNotificationBadgeColorHex") private var sidebarNotificationBadgeColorHex: String?
 
     var isMultiSelected: Bool {
         selectedTabIds.contains(tab.id)
@@ -11115,7 +11201,10 @@ private struct TabItemView: View, Equatable {
     }
 
     private var activeUnreadBadgeFillColor: Color {
-        usesInvertedActiveForeground ? Color.white.opacity(0.25) : cmuxAccentColor()
+        if let hex = sidebarNotificationBadgeColorHex, let nsColor = NSColor(hex: hex) {
+            return Color(nsColor: nsColor)
+        }
+        return usesInvertedActiveForeground ? Color.white.opacity(0.25) : cmuxAccentColor()
     }
 
     private var activeProgressTrackColor: Color {
@@ -11244,6 +11333,7 @@ private struct TabItemView: View, Equatable {
     }
 
     var body: some View {
+        let _ = workspaceObservationGeneration
         let closeWorkspaceTooltip = String(localized: "sidebar.closeWorkspace.tooltip", defaultValue: "Close Workspace")
         let protectedWorkspaceTooltip = String(
             localized: "sidebar.pinnedWorkspaceProtected.tooltip",
@@ -11538,11 +11628,22 @@ private struct TabItemView: View, Equatable {
 
             // Ports row
             if detailVisibility.showsPorts, !tab.listeningPorts.isEmpty {
-                Text(tab.listeningPorts.map { ":\($0)" }.joined(separator: ", "))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(activeSecondaryColor(0.75))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                HStack(spacing: 4) {
+                    ForEach(tab.listeningPorts, id: \.self) { port in
+                        Button(action: {
+                            openPortLink(port)
+                        }) {
+                            Text(String(localized: "sidebar.port.label", defaultValue: ":\(port)"))
+                                .underline()
+                        }
+                        .buttonStyle(.plain)
+                        .safeHelp(String(localized: "sidebar.port.openTooltip", defaultValue: "Open localhost:\(port)"))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(activeSecondaryColor(0.75))
+                .lineLimit(1)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: tab.logEntries.count)
@@ -11598,6 +11699,16 @@ private struct TabItemView: View, Equatable {
                     .padding(.horizontal, 8)
                     .offset(y: index == 0 ? 0 : -(rowSpacing / 2))
             }
+        }
+        .onReceive(
+            tab.objectWillChange
+                .receive(on: RunLoop.main)
+                // Prompt-time sidebar telemetry can arrive as a short burst
+                // (pwd, branch, PR, shell state). Coalesce that burst so the
+                // row redraws once with the settled state instead of blinking.
+                .debounce(for: Self.workspaceObservationCoalesceInterval, scheduler: RunLoop.main)
+        ) { _ in
+            workspaceObservationGeneration &+= 1
         }
         .onDrag {
             #if DEBUG
@@ -11875,14 +11986,21 @@ private struct TabItemView: View, Equatable {
         .disabled(!hasReadNotifications(in: targetIds))
     }
 
+    private var selectionBackgroundColor: NSColor {
+        if let hex = sidebarSelectionColorHex, let parsed = NSColor(hex: hex) {
+            return parsed
+        }
+        return cmuxAccentNSColor(for: colorScheme)
+    }
+
     private var backgroundColor: Color {
         switch activeTabIndicatorStyle {
         case .leftRail:
-            if isActive        { return Color(nsColor: sidebarSelectedWorkspaceBackgroundNSColor(for: colorScheme)) }
+            if isActive        { return Color(nsColor: selectionBackgroundColor) }
             if isMultiSelected { return cmuxAccentColor().opacity(0.25) }
             return Color.clear
         case .solidFill:
-            if isActive { return Color(nsColor: sidebarSelectedWorkspaceBackgroundNSColor(for: colorScheme)) }
+            if isActive { return Color(nsColor: selectionBackgroundColor) }
             if let custom = resolvedCustomTabColor {
                 if isMultiSelected { return custom.opacity(0.35) }
                 return custom.opacity(0.7)
@@ -12253,6 +12371,23 @@ private struct TabItemView: View, Equatable {
     private func openPullRequestLink(_ url: URL) {
         updateSelection()
         if openSidebarPullRequestLinksInCmuxBrowser {
+            if tabManager.openBrowser(
+                inWorkspace: tab.id,
+                url: url,
+                preferSplitRight: true,
+                insertAtEnd: true
+            ) == nil {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func openPortLink(_ port: Int) {
+        guard let url = URL(string: "http://localhost:\(port)") else { return }
+        updateSelection()
+        if openSidebarPortLinksInCmuxBrowser {
             if tabManager.openBrowser(
                 inWorkspace: tab.id,
                 url: url,

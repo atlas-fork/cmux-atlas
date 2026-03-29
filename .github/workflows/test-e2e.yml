@@ -1,6 +1,8 @@
 name: E2E test with video recording
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
     inputs:
       ref:
@@ -30,15 +32,20 @@ on:
 
 jobs:
   e2e:
-    runs-on: ${{ inputs.runner || 'depot-macos-latest' }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ github.event_name == 'pull_request' && 'depot-macos-latest' || inputs.runner || 'depot-macos-latest' }}
     timeout-minutes: 20
     env:
-      TEST_REF: ${{ inputs.ref || github.ref }}
+      TEST_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || github.ref }}
+      EFFECTIVE_TEST_FILTER: ${{ github.event_name == 'pull_request' && 'UpdatePillUITests' || inputs.test_filter }}
+      EFFECTIVE_TEST_TIMEOUT: ${{ github.event_name == 'pull_request' && '120' || inputs.test_timeout || '120' }}
+      EFFECTIVE_RECORD_VIDEO: ${{ github.event_name == 'pull_request' && 'false' || (inputs.record_video && 'true' || 'false') }}
+      EFFECTIVE_REF_DISPLAY: ${{ github.event_name == 'pull_request' && github.head_ref || inputs.ref || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || inputs.ref || github.ref }}
           submodules: recursive
 
       - name: Capture SHA
@@ -109,7 +116,7 @@ jobs:
           fi
 
       - name: Create virtual display
-        if: ${{ inputs.test_filter != 'DisplayResolutionRegressionUITests' }}
+        if: ${{ env.EFFECTIVE_TEST_FILTER != 'DisplayResolutionRegressionUITests' }}
         run: |
           set -euo pipefail
           echo "=== Display before ==="
@@ -125,7 +132,7 @@ jobs:
           system_profiler SPDisplaysDataType 2>/dev/null || echo "(none)"
 
       - name: Install ffmpeg
-        if: ${{ inputs.record_video }}
+        if: ${{ env.EFFECTIVE_RECORD_VIDEO == 'true' }}
         run: |
           brew install --quiet ffmpeg
           FFMPEG_PATH=$(which ffmpeg)
@@ -134,7 +141,7 @@ jobs:
           echo "FFMPEG_PATH=$FFMPEG_PATH" >> "$GITHUB_ENV"
 
       - name: Grant TCC screen recording permission
-        if: ${{ inputs.record_video }}
+        if: ${{ env.EFFECTIVE_RECORD_VIDEO == 'true' }}
         continue-on-error: true
         run: |
           FFMPEG_BIN="${FFMPEG_PATH:-/opt/homebrew/bin/ffmpeg}"
@@ -199,9 +206,9 @@ jobs:
       - name: Run UI tests
         id: tests
         env:
-          TEST_FILTER: ${{ inputs.test_filter }}
-          TEST_TIMEOUT: ${{ inputs.test_timeout || '120' }}
-          RECORD_VIDEO: ${{ inputs.record_video }}
+          TEST_FILTER: ${{ env.EFFECTIVE_TEST_FILTER }}
+          TEST_TIMEOUT: ${{ env.EFFECTIVE_TEST_TIMEOUT }}
+          RECORD_VIDEO: ${{ env.EFFECTIVE_RECORD_VIDEO }}
         run: |
           set -euo pipefail
           SOURCE_PACKAGES_DIR="$PWD/.ci-source-packages"
@@ -293,7 +300,7 @@ jobs:
           fi
 
       - name: Stop recording and trim
-        if: ${{ always() && inputs.record_video && env.RECORD_PID != '' }}
+        if: ${{ always() && env.EFFECTIVE_RECORD_VIDEO == 'true' && env.RECORD_PID != '' }}
         run: |
           # Stop ffmpeg cleanly
           kill -INT "$RECORD_PID" 2>/dev/null || true
@@ -334,7 +341,7 @@ jobs:
             | xargs -I{} echo "Duration: {}s"
 
       - name: Upload recording artifact
-        if: ${{ always() && inputs.record_video }}
+        if: ${{ always() && env.EFFECTIVE_RECORD_VIDEO == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-recording
@@ -348,10 +355,10 @@ jobs:
           TEST_RESULT: ${{ steps.tests.outputs.test_result || 'failed' }}
           TEST_SUMMARY: ${{ steps.tests.outputs.test_summary }}
           TEST_OUTPUT: ${{ steps.tests.outputs.test_output }}
-          TEST_FILTER: ${{ inputs.test_filter }}
+          TEST_FILTER: ${{ env.EFFECTIVE_TEST_FILTER }}
           COMMIT_SHA: ${{ steps.sha.outputs.sha }}
           RUN_ID: ${{ github.run_id }}
-          RECORD_VIDEO: ${{ inputs.record_video }}
+          RECORD_VIDEO: ${{ env.EFFECTIVE_RECORD_VIDEO }}
         run: |
           set -euo pipefail
 
@@ -362,7 +369,7 @@ jobs:
             STATUS_EMOJI="FAILED"
           fi
 
-          REF_DISPLAY="${{ inputs.ref || github.ref_name }}"
+          REF_DISPLAY="${{ env.EFFECTIVE_REF_DISPLAY }}"
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/$RUN_ID"
           ARTIFACT_URL="$RUN_URL#artifacts"
 

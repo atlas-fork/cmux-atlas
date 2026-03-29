@@ -1504,12 +1504,31 @@ func browserOmnibarShouldSubmitOnReturn(flags: NSEvent.ModifierFlags) -> Bool {
     return normalizedFlags == [] || normalizedFlags == [.shift]
 }
 
+func browserResponderHasMarkedText(_ responder: NSResponder?) -> Bool {
+    guard let responder else { return false }
+
+    // During IME composition, Return/Enter belongs to the text system so the
+    // candidate list can commit or confirm the marked text.
+    if let textInputClient = responder as? NSTextInputClient {
+        return textInputClient.hasMarkedText()
+    }
+
+    if let textField = responder as? NSTextField,
+       let editor = textField.currentEditor() as? NSTextView {
+        return editor.hasMarkedText()
+    }
+
+    return false
+}
+
 func shouldDispatchBrowserReturnViaFirstResponderKeyDown(
     keyCode: UInt16,
     firstResponderIsBrowser: Bool,
+    firstResponderHasMarkedText: Bool = false,
     flags: NSEvent.ModifierFlags
 ) -> Bool {
     guard firstResponderIsBrowser else { return false }
+    guard !firstResponderHasMarkedText else { return false }
     guard keyCode == 36 || keyCode == 76 else { return false }
     // Keep browser Return forwarding narrow: only plain/Shift Return should be
     // treated as submit-intent. Command-modified Return is reserved for app shortcuts
@@ -1828,6 +1847,42 @@ func cmuxOwningGhosttyView(for responder: NSResponder?) -> GhosttyNSView? {
     }
 
     return nil
+}
+
+func isCommandPaletteFocusStealingTerminalOrBrowserResponder(_ responder: NSResponder?) -> Bool {
+    guard let responder else { return false }
+
+    if responder is GhosttyNSView || responder is WKWebView {
+        return true
+    }
+
+    if let textView = responder as? NSTextView,
+       !textView.isFieldEditor,
+       let delegateView = textView.delegate as? NSView {
+        return isCommandPaletteFocusStealingTerminalOrBrowserView(delegateView)
+    }
+
+    if let view = responder as? NSView {
+        return isCommandPaletteFocusStealingTerminalOrBrowserView(view)
+    }
+
+    return false
+}
+
+private func isCommandPaletteFocusStealingTerminalOrBrowserView(_ view: NSView) -> Bool {
+    if view is GhosttyNSView || view is WKWebView {
+        return true
+    }
+
+    var current: NSView? = view.superview
+    while let candidate = current {
+        if candidate is GhosttyNSView || candidate is WKWebView {
+            return true
+        }
+        current = candidate.superview
+    }
+
+    return false
 }
 
 private func cmuxOwningGhosttyView(for view: NSView) -> GhosttyNSView? {
@@ -5579,6 +5634,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         _ = createMainWindow()
     }
 
+    @objc func showOpenFolderPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.title = String(localized: "panel.openFolder.title", defaultValue: "Open Folder")
+        panel.prompt = String(localized: "panel.openFolder.prompt", defaultValue: "Open")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        if addWorkspaceInPreferredMainWindow(
+            workingDirectory: url.path,
+            debugSource: "menu.openFolder"
+        ) == nil {
+            _ = createMainWindow(initialWorkingDirectory: url.path)
+        }
+    }
+
     /// Opens a saved organization in a new window.
     func openOrganizationInNewWindow(_ org: WorkspaceOrganization) {
         let snapshot = SessionWindowSnapshot(
@@ -6086,6 +6157,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc func checkForUpdates(_ sender: Any?) {
         updateViewModel.overrideState = nil
         updateController.checkForUpdates()
+    }
+
+    func checkForUpdatesInCustomUI() {
+        updateViewModel.overrideState = nil
+        updateController.checkForUpdatesInCustomUI()
     }
 
     func openWelcomeWorkspace() {
@@ -12600,6 +12676,7 @@ private extension NSWindow {
         if shouldDispatchBrowserReturnViaFirstResponderKeyDown(
             keyCode: event.keyCode,
             firstResponderIsBrowser: firstResponderWebView != nil,
+            firstResponderHasMarkedText: browserResponderHasMarkedText(self.firstResponder),
             flags: event.modifierFlags
         ) {
             // Forwarding keyDown can re-enter performKeyEquivalent in WebKit/AppKit internals.

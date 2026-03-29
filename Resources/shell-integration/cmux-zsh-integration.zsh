@@ -199,9 +199,8 @@ _cmux_report_tty_once() {
     [[ -n "$CMUX_PANEL_ID" ]] || return 0
     [[ -n "$_CMUX_TTY_NAME" ]] || return 0
     _CMUX_TTY_REPORTED=1
-    {
-        _cmux_send "report_tty $_CMUX_TTY_NAME --tab=$CMUX_TAB_ID --panel=$CMUX_PANEL_ID"
-    } >/dev/null 2>&1 &!
+    local payload="report_tty $_CMUX_TTY_NAME --tab=$CMUX_TAB_ID --panel=$CMUX_PANEL_ID"
+    _cmux_send_bg "$payload"
 }
 
 _cmux_report_shell_activity_state() {
