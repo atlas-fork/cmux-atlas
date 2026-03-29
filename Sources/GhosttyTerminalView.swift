@@ -4258,6 +4258,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
         #endif
     }
 
+#if DEBUG
+    func queuedTextForTesting() -> String {
+        let data = pendingTextQueue.reduce(into: Data()) { partialResult, chunk in
+            partialResult.append(chunk)
+        }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+#endif
+
     func performBindingAction(_ action: String) -> Bool {
         guard let surface = surface else { return false }
         return action.withCString { cString in

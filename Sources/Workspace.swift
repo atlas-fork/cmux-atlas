@@ -525,12 +525,12 @@ extension Workspace {
             .sorted { $0.uuidString < $1.uuidString }
 
         var appliedCount = 0
-        var skippedLiveCount = 0
+        var skippedDetectedLiveCount = 0
 
         for panelId in terminalPanelIds {
             guard let terminalPanel = panels[panelId] as? TerminalPanel else { continue }
-            if activeAISessions[panelId] != nil {
-                skippedLiveCount += 1
+            if cachedAISessions[panelId] != nil {
+                skippedDetectedLiveCount += 1
                 continue
             }
             guard let action = currentRestoredTerminalAction(panelId: panelId) else { continue }
@@ -544,9 +544,9 @@ extension Workspace {
                 "workspaceId": id.uuidString,
                 "terminalPanelCount": terminalPanelIds.count,
                 "appliedCount": appliedCount,
-                "skippedLiveCount": skippedLiveCount,
+                "skippedLiveCount": skippedDetectedLiveCount,
                 "cachedSessionCount": cachedAISessions.count,
-                "activeSessionCount": activeAISessions.count,
+                "activeSessionCount": cachedAISessions.count,
             ]
             sentryBreadcrumb("ai.resume.refresh", category: "ai_resume", data: data)
             if appliedCount == 0 {
