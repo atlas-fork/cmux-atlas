@@ -2,6 +2,22 @@
 
 All notable changes to cmux are documented here.
 
+## [1.38.1-atlas.3] - 2026-03-29
+
+### Added
+- Upstream `cmux.json` custom command support, directory trust flow, and docs updates
+- New remote daemon tmux-compat relay support, `cmux omo`, and `claude-teams` integration updates
+- Internal PR E2E coverage and an external-PR policy workflow to keep self-hosted CI limited to trusted branches
+
+### Changed
+- Synced the Atlas fork onto upstream `1.38.1` while preserving Atlas update, workflow, and AI-session integrations
+- Footer memory reporting now includes tracked terminal process usage instead of app-only resident memory
+
+### Fixed
+- Launch crashes from corrupt autosaved window frames, including runtime frame clamping and Sentry diagnostics
+- Stale Claude/Codex resume prefill so ended sessions do not override a newer live TUI session
+- Browser return/IME routing, stale terminal-surface ownership handling, and inherited-surface quarantine paths lost during merge resolution
+
 ## [0.62.2-atlas.5] - 2026-03-28
 
 ### Fixed
