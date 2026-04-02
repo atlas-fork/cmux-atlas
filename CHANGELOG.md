@@ -2,15 +2,18 @@
 
 All notable changes to cmux are documented here.
 
-## [0.63.1-atlas.6] - 2026-04-02
+## [0.63.1-atlas.7] - 2026-04-03
 
 ### Changed
 - Move current-workspace organization actions out of the sidebar workspace right-click menu and into File > Organizations, keeping organization management in the top menu where it belongs
 - Make the centered titlebar breadcrumb show the organization name more prominently, with the current workspace title as secondary context
+- Under critical memory pressure, send Ctrl-C to the heaviest tracked terminal session instead of closing the entire workspace
+- Compact selected workspace rows more aggressively so RAM chips, logs, metadata, and progress do not stack into an unreadable block
 
 ### Fixed
 - Add a direct titlebar context-menu affordance to rename or clear the current workspace organization without going back to the sidebar workspace menu
 - Stabilize release signing by making the temporary CI signing keychain the default before re-signing bundled helper binaries
+- Update memory-pressure warnings and notifications to reflect the new non-destructive interrupt behavior
 
 ## [0.63.1-atlas.4] - 2026-04-02
 

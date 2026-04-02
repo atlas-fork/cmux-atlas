@@ -9569,7 +9569,7 @@ private struct SidebarMemoryUsageButton: View {
         case .warning:
             return String(localized: "memory.footer.pressure.warning", defaultValue: "System memory pressure elevated — session auto-saved")
         case .critical:
-            return String(localized: "memory.footer.pressure.critical", defaultValue: "System memory critical — heavy workspaces may be closed to prevent crash")
+            return String(localized: "memory.footer.pressure.critical", defaultValue: "System memory critical — a heavy terminal session may receive Ctrl-C to reduce crash risk")
         }
     }
 
@@ -11446,6 +11446,16 @@ private struct TabItemView: View, Equatable {
             guard detailVisibility.showsPullRequests, let orderedPanelIds else { return [] }
             return pullRequestDisplays(orderedPanelIds: orderedPanelIds)
         }()
+        let metadataEntries = detailVisibility.showsMetadata ? tab.sidebarStatusEntriesInDisplayOrder() : []
+        let metadataBlocks = detailVisibility.showsMetadata ? tab.sidebarMetadataBlocksInDisplayOrder() : []
+        let latestLog = detailVisibility.showsLog ? tab.logEntries.last : nil
+        let shouldCompactSummaryRows =
+            effectiveSubtitle != nil ||
+            remoteWorkspaceSidebarText != nil ||
+            tab.progress != nil ||
+            latestLog != nil
+        let metadataEntryLimit = shouldCompactSummaryRows ? 1 : 3
+        let showProgressLabel = !shouldCompactSummaryRows
 
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -11537,7 +11547,7 @@ private struct TabItemView: View, Equatable {
                 Text(subtitle)
                     .font(.system(size: 10))
                     .foregroundColor(activeSecondaryColor(0.8))
-                    .lineLimit(2)
+                    .lineLimit(1)
                     .truncationMode(.tail)
                     .multilineTextAlignment(.leading)
             }
@@ -11545,11 +11555,10 @@ private struct TabItemView: View, Equatable {
             remoteWorkspaceSection
 
             if detailVisibility.showsMetadata {
-                let metadataEntries = tab.sidebarStatusEntriesInDisplayOrder()
-                let metadataBlocks = tab.sidebarMetadataBlocksInDisplayOrder()
                 if !metadataEntries.isEmpty {
                     SidebarMetadataRows(
                         entries: metadataEntries,
+                        collapsedEntryLimit: metadataEntryLimit,
                         isActive: usesInvertedActiveForeground,
                         onFocus: { updateSelection() }
                     )
@@ -11566,7 +11575,7 @@ private struct TabItemView: View, Equatable {
             }
 
             // Latest log entry
-            if detailVisibility.showsLog, let latestLog = tab.logEntries.last {
+            if detailVisibility.showsLog, tab.progress == nil, let latestLog {
                 HStack(spacing: 4) {
                     Image(systemName: logLevelIcon(latestLog.level))
                         .font(.system(size: 8))
@@ -11594,7 +11603,7 @@ private struct TabItemView: View, Equatable {
                     }
                     .frame(height: 3)
 
-                    if let label = progress.label {
+                    if showProgressLabel, let label = progress.label {
                         Text(label)
                             .font(.system(size: 9))
                             .foregroundColor(activeSecondaryColor(0.6))
@@ -12690,11 +12699,11 @@ private struct TabItemView: View, Equatable {
 
 private struct SidebarMetadataRows: View {
     let entries: [SidebarStatusEntry]
+    let collapsedEntryLimit: Int
     let isActive: Bool
     let onFocus: () -> Void
 
     @State private var isExpanded: Bool = false
-    private let collapsedEntryLimit = 3
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {

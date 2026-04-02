@@ -267,6 +267,10 @@ struct MemoryProcessSummary: Identifiable, Equatable {
     let pid: Int32
     let name: String
     let bytes: Int64
+    let workspaceId: UUID?
+    let workspaceTitle: String?
+    let panelId: UUID?
+    let panelTitle: String?
 
     var id: Int32 { pid }
 }
@@ -652,27 +656,42 @@ final class MemoryUsageStore: ObservableObject {
                 MemoryProcessSummary(
                     pid: $0.pid,
                     name: displayProcessName(command: $0.command),
-                    bytes: $0.residentBytes
+                    bytes: $0.residentBytes,
+                    workspaceId: nil,
+                    workspaceTitle: nil,
+                    panelId: nil,
+                    panelTitle: nil
                 )
             }
 
-        // Build process tree: map each PID to its workspace by walking the PPID chain.
-        // A process belongs to a workspace if any ancestor's TTY matches a tracked panel.
+        // Build process tree ownership by walking the PPID chain. A process belongs to a tracked
+        // terminal panel if its own TTY or any ancestor's TTY matches that panel.
         let pidToRow = Dictionary(rows.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
 
-        // Map TTY-owning PIDs directly to their workspace
-        var pidToWorkspace: [Int32: (id: UUID, title: String)] = [:]
-        for row in rows {
-            guard let tty = row.tty, let panel = trackedByTTY[tty] else { continue }
-            pidToWorkspace[row.pid] = (panel.workspaceId, panel.workspaceTitle)
+        struct ProcessOwner {
+            let workspaceId: UUID
+            let workspaceTitle: String
+            let panelId: UUID
+            let panelTitle: String
         }
 
-        // For each non-app process, walk PPID chain to find workspace ownership
-        func resolveWorkspace(for pid: Int32) -> (id: UUID, title: String)? {
+        // Map TTY-owning PIDs directly to their panel/workspace
+        var pidToOwner: [Int32: ProcessOwner] = [:]
+        for row in rows {
+            guard let tty = row.tty, let panel = trackedByTTY[tty] else { continue }
+            pidToOwner[row.pid] = ProcessOwner(
+                workspaceId: panel.workspaceId,
+                workspaceTitle: panel.workspaceTitle,
+                panelId: panel.panelId,
+                panelTitle: panel.panelTitle
+            )
+        }
+
+        func resolveOwner(for pid: Int32) -> ProcessOwner? {
             var current = pid
             var visited: Set<Int32> = []
             while let row = pidToRow[current] {
-                if let ws = pidToWorkspace[current] { return ws }
+                if let owner = pidToOwner[current] { return owner }
                 if !visited.insert(current).inserted { break }
                 if row.ppid == 0 || row.ppid == current { break }
                 current = row.ppid
@@ -688,13 +707,18 @@ final class MemoryUsageStore: ObservableObject {
             .prefix(20)
 
         for row in significantProcesses {
+            let owner = resolveOwner(for: row.pid)
             let summary = MemoryProcessSummary(
                 pid: row.pid,
                 name: displayProcessName(command: row.command),
-                bytes: row.residentBytes
+                bytes: row.residentBytes,
+                workspaceId: owner?.workspaceId,
+                workspaceTitle: owner?.workspaceTitle,
+                panelId: owner?.panelId,
+                panelTitle: owner?.panelTitle
             )
-            if let ws = resolveWorkspace(for: row.pid) {
-                grouped[ws.id, default: (ws.title, [])].procs.append(summary)
+            if let owner {
+                grouped[owner.workspaceId, default: (owner.workspaceTitle, [])].procs.append(summary)
             } else {
                 grouped[nil, default: (String(localized: "memory.popover.otherProcesses", defaultValue: "Other"), [])].procs.append(summary)
             }
@@ -855,7 +879,7 @@ final class SystemMemoryPressureMonitor {
             return
         }
 
-        // 3. Find and kill heaviest workspace
+        // 3. Find and interrupt the heaviest tracked terminal session
         guard let target = findKillTarget(snapshot: snapshot) else {
 #if DEBUG
             dlog("memory.pressure.kill no target exceeds thresholds")
@@ -864,7 +888,7 @@ final class SystemMemoryPressureMonitor {
         }
 
         lastKillTime = now
-        killAndCloseWorkspace(target)
+        interruptProtectedWorkspace(target)
     }
 
     // MARK: - Kill Logic
@@ -872,6 +896,8 @@ final class SystemMemoryPressureMonitor {
     private struct KillTarget {
         let workspaceId: UUID
         let workspaceTitle: String
+        let panelId: UUID?
+        let panelTitle: String?
         let totalBytes: Int64
         let heaviestPID: Int32
         let heaviestProcessName: String
@@ -905,6 +931,8 @@ final class SystemMemoryPressureMonitor {
         return KillTarget(
             workspaceId: wsId,
             workspaceTitle: heaviestGroup.workspaceTitle,
+            panelId: heaviestProc.panelId,
+            panelTitle: heaviestProc.panelTitle,
             totalBytes: heaviestGroup.totalBytes,
             heaviestPID: heaviestProc.pid,
             heaviestProcessName: heaviestProc.name,
@@ -912,43 +940,66 @@ final class SystemMemoryPressureMonitor {
         )
     }
 
-    private func killAndCloseWorkspace(_ target: KillTarget) {
+    private func interruptProtectedWorkspace(_ target: KillTarget) {
 #if DEBUG
         dlog(
-            "memory.pressure.kill workspace=\"\(target.workspaceTitle)\" pid=\(target.heaviestPID) " +
-            "process=\(target.heaviestProcessName) bytes=\(MemoryUsageFormatter.compactString(for: target.heaviestProcessBytes))"
+            "memory.pressure.interrupt workspace=\"\(target.workspaceTitle)\" pid=\(target.heaviestPID) " +
+            "panel=\(target.panelTitle ?? "unknown") process=\(target.heaviestProcessName) " +
+            "bytes=\(MemoryUsageFormatter.compactString(for: target.heaviestProcessBytes))"
         )
 #endif
 
-        // SIGKILL the heaviest process
-        Darwin.kill(target.heaviestPID, SIGKILL)
-
-        // Close workspace on main thread
+        // Send Ctrl-C to the owning terminal surface, preserving the pane and workspace.
         DispatchQueue.main.async {
             guard let appDelegate = AppDelegate.shared else { return }
-            for tabManager in appDelegate.allTabManagers() {
-                if let workspace = tabManager.tabs.first(where: { $0.id == target.workspaceId }) {
-                    tabManager.closeWorkspace(workspace)
+            if let panelId = target.panelId {
+                for tabManager in appDelegate.allTabManagers() {
+                    guard let workspace = tabManager.tabs.first(where: { $0.id == target.workspaceId }),
+                          let terminalPanel = workspace.terminalPanel(for: panelId) else {
+                        continue
+                    }
+                    terminalPanel.sendText("\u{3}")
                     break
                 }
             }
+
+            appDelegate.notificationStore?.addNotification(
+                tabId: target.workspaceId,
+                surfaceId: target.panelId,
+                title: String(
+                    localized: "memory.pressure.kill.notification.title",
+                    defaultValue: "Memory Pressure: Session Interrupted"
+                ),
+                subtitle: target.workspaceTitle,
+                body: Self.killNotificationBody(for: target)
+            )
         }
 
-        // Post macOS user notification
         postKillNotification(target: target)
+    }
+
+    private static func killNotificationBody(for target: KillTarget) -> String {
+        let memString = MemoryUsageFormatter.compactString(for: target.heaviestProcessBytes)
+        if let panelTitle = target.panelTitle,
+           !panelTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return String(
+                localized: "memory.pressure.kill.notification.body",
+                defaultValue: "Sent Ctrl-C to terminal session \"\(panelTitle)\" in workspace \"\(target.workspaceTitle)\" to reduce memory pressure. Process \(target.heaviestProcessName) was using \(memString)."
+            )
+        }
+        return String(
+            localized: "memory.pressure.kill.notification.body",
+            defaultValue: "Sent Ctrl-C to a terminal session in workspace \"\(target.workspaceTitle)\" to reduce memory pressure. Process \(target.heaviestProcessName) was using \(memString)."
+        )
     }
 
     private func postKillNotification(target: KillTarget) {
         let content = UNMutableNotificationContent()
         content.title = String(
             localized: "memory.pressure.kill.notification.title",
-            defaultValue: "Memory Pressure: Workspace Closed"
+            defaultValue: "Memory Pressure: Session Interrupted"
         )
-        let memString = MemoryUsageFormatter.compactString(for: target.heaviestProcessBytes)
-        content.body = String(
-            localized: "memory.pressure.kill.notification.body",
-            defaultValue: "Workspace \"\(target.workspaceTitle)\" was closed to prevent a system crash. Process \(target.heaviestProcessName) was using \(memString)."
-        )
+        content.body = Self.killNotificationBody(for: target)
         content.sound = .default
 
         let request = UNNotificationRequest(

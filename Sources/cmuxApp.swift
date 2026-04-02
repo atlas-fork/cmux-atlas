@@ -5172,7 +5172,7 @@ struct SettingsView: View {
 
                         SettingsCardRow(
                             String(localized: "settings.app.memoryPressureKill", defaultValue: "Kill on Critical Memory Pressure"),
-                            subtitle: String(localized: "settings.app.memoryPressureKill.subtitle", defaultValue: "When system memory is critically low, automatically kill the heaviest terminal process and close its workspace to prevent a system crash.")
+                            subtitle: String(localized: "settings.app.memoryPressureKill.subtitle", defaultValue: "When system memory is critically low, send Ctrl-C to the heaviest terminal session while preserving the workspace.")
                         ) {
                             Toggle("", isOn: $memoryPressureKillEnabled)
                                 .labelsHidden()
@@ -5184,7 +5184,7 @@ struct SettingsView: View {
 
                             SettingsCardRow(
                                 String(localized: "settings.app.memoryPressureKillThreshold", defaultValue: "Kill Threshold (GB)"),
-                                subtitle: String(localized: "settings.app.memoryPressureKillThreshold.subtitle", defaultValue: "A workspace is eligible for kill if it exceeds this amount or uses more than 50% of tracked terminal memory.")
+                                subtitle: String(localized: "settings.app.memoryPressureKillThreshold.subtitle", defaultValue: "A terminal session is eligible if its workspace exceeds this amount or uses more than 50% of tracked terminal memory.")
                             ) {
                                 HStack(spacing: 6) {
                                     Slider(
