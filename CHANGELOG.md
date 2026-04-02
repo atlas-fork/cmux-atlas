@@ -2,6 +2,16 @@
 
 All notable changes to cmux are documented here.
 
+## [0.63.1-atlas.4] - 2026-04-02
+
+### Fixed
+- Restore terminal file-link handoff to the linked editor, including positioned `path:line:column` references and markdown-file opens that should jump into Zed when it is already running
+- Restore the browser-link toggle button in the rebuilt workspace tab-strip controls
+- Restore the workspace sidebar memory chip layout so long titles no longer wrap awkwardly around the RAM badge
+
+### Tests
+- Re-add runtime regression coverage for workspace tab path actions and terminal file-link resolution on the rebuilt Atlas line
+
 ## [0.63.1-atlas.3] - 2026-04-02
 
 ### Fixed
