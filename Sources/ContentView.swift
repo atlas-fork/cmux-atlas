@@ -2379,25 +2379,41 @@ struct ContentView: View {
 
     @ViewBuilder
     private var titlebarBreadcrumb: some View {
-        if let orgName = titlebarOrgName, !orgName.isEmpty {
-            HStack(spacing: 4) {
-                Text(orgName)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(fakeTitlebarTextColor.opacity(0.6))
-                    .lineLimit(1)
-                Text("/")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(fakeTitlebarTextColor.opacity(0.35))
+        Group {
+            if let orgName = titlebarOrgName, !orgName.isEmpty {
+                VStack(spacing: 0) {
+                    Text(orgName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(fakeTitlebarTextColor)
+                        .lineLimit(1)
+                    if !titlebarText.isEmpty {
+                        Text(titlebarText)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(fakeTitlebarTextColor.opacity(0.58))
+                            .lineLimit(1)
+                    }
+                }
+            } else {
                 Text(titlebarText)
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(fakeTitlebarTextColor)
                     .lineLimit(1)
             }
-        } else {
-            Text(titlebarText)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(fakeTitlebarTextColor)
-                .lineLimit(1)
+        }
+        .contextMenu {
+            Button(
+                (titlebarOrgName?.isEmpty == false)
+                    ? String(localized: "titlebar.organization.rename", defaultValue: "Rename Organization…")
+                    : String(localized: "titlebar.organization.name", defaultValue: "Name Organization…")
+            ) {
+                promptRenameSelectedWorkspaceOrganization()
+            }
+
+            if titlebarOrgName?.isEmpty == false {
+                Button(String(localized: "titlebar.organization.clear", defaultValue: "Clear Organization Name")) {
+                    selectedWorkspaceForTitlebar()?.setOrganizationName(nil)
+                }
+            }
         }
     }
 
@@ -2405,6 +2421,40 @@ struct ContentView: View {
         titlebarTextUpdateCoalescer.signal {
             updateTitlebarText()
         }
+    }
+
+    private func selectedWorkspaceForTitlebar() -> Workspace? {
+        guard let selectedId = tabManager.selectedTabId else { return nil }
+        return tabManager.tabs.first(where: { $0.id == selectedId })
+    }
+
+    private func promptRenameSelectedWorkspaceOrganization() {
+        guard let workspace = selectedWorkspaceForTitlebar() else { return }
+
+        let fallbackName = workspace.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? String(localized: "workspace.displayName.fallback", defaultValue: "Workspace")
+            : workspace.title
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "organization.name.title", defaultValue: "Name Organization")
+        alert.informativeText = String(localized: "organization.name.message", defaultValue: "Enter a name for this workspace's organization.")
+        alert.addButton(withTitle: String(localized: "organization.name.save", defaultValue: "Save"))
+        alert.addButton(withTitle: String(localized: "organization.name.cancel", defaultValue: "Cancel"))
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        input.stringValue = workspace.organizationName ?? fallbackName
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        DispatchQueue.main.async {
+            alert.window.makeFirstResponder(input)
+            input.selectText(nil)
+        }
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty else { return }
+        workspace.setOrganizationName(newName)
     }
 
     private func scheduleTitlebarThemeRefresh(
@@ -11988,53 +12038,6 @@ private struct TabItemView: View, Equatable {
 
         Divider()
 
-        let favName = tab.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? String(localized: "workspace.displayName.fallback", defaultValue: "Workspace")
-            : tab.title
-
-        Button(String(localized: "contextMenu.nameOrganization", defaultValue: "Name Organization…")) {
-            let alert = NSAlert()
-            alert.messageText = String(localized: "organization.name.title", defaultValue: "Name Organization")
-            alert.informativeText = String(localized: "organization.name.message", defaultValue: "Enter a name for this workspace's organization.")
-            alert.addButton(withTitle: String(localized: "organization.name.save", defaultValue: "Save"))
-            alert.addButton(withTitle: String(localized: "organization.name.cancel", defaultValue: "Cancel"))
-            let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-            input.stringValue = tab.organizationName ?? favName
-            alert.accessoryView = input
-            alert.window.initialFirstResponder = input
-            guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !newName.isEmpty else { return }
-            tab.setOrganizationName(newName)
-        }
-
-        Button(String(localized: "contextMenu.saveAsOrganization", defaultValue: "Save as Organization")) {
-            let orgName = tab.organizationName ?? favName
-            let snapshot = tab.sessionSnapshot(includeScrollback: false)
-            let org = WorkspaceOrganization(name: orgName, snapshot: snapshot)
-            let orgs = WorkspaceOrganizationStore.loadAll()
-            if orgs.count >= WorkspaceOrganizationStore.maxOrganizations {
-                if let oldest = orgs.last {
-                    WorkspaceOrganizationStore.remove(oldest.id)
-                }
-            }
-            WorkspaceOrganizationStore.save(org)
-        }
-
-        Button(String(localized: "contextMenu.exportOrganization", defaultValue: "Export Organization…")) {
-            let orgName = tab.organizationName ?? favName
-            let snapshot = tab.sessionSnapshot(includeScrollback: true)
-            WorkspaceOrganizationStore.exportWorkspace(snapshot, name: orgName)
-        }
-
-        Button(String(localized: "contextMenu.importOrganization", defaultValue: "Import Organization…")) {
-            if let org = WorkspaceOrganizationStore.importWorkspace() {
-                tabManager.addWorkspaceFromSnapshot(org.snapshot, organizationName: org.name)
-            }
-        }
-
-        Divider()
-
         Button(markReadLabel) {
             markTabsRead(targetIds)
         }
@@ -12682,6 +12685,7 @@ private struct TabItemView: View, Equatable {
         guard response == .alertFirstButtonReturn else { return }
         tabManager.setCustomTitle(tabId: tab.id, title: input.stringValue)
     }
+
 }
 
 private struct SidebarMetadataRows: View {

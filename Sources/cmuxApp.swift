@@ -723,7 +723,29 @@ struct cmuxApp: App {
                 Divider()
 
                 Menu(String(localized: "menu.file.organizations", defaultValue: "Organizations")) {
+                    let currentWorkspace = activeTabManager.selectedWorkspace
                     let orgs = WorkspaceOrganizationStore.loadAll()
+
+                    Button(
+                        (currentWorkspace?.organizationName?.isEmpty == false)
+                            ? String(localized: "menu.file.organizations.renameCurrent", defaultValue: "Rename Current Organization…")
+                            : String(localized: "menu.file.organizations.nameCurrent", defaultValue: "Name Current Organization…")
+                    ) {
+                        promptRenameCurrentOrganization()
+                    }
+                    .disabled(currentWorkspace == nil)
+
+                    Button(String(localized: "menu.file.organizations.saveCurrent", defaultValue: "Save Current Workspace as Organization")) {
+                        saveCurrentWorkspaceAsOrganization(includeScrollback: false)
+                    }
+                    .disabled(currentWorkspace == nil)
+
+                    Button(String(localized: "menu.file.organizations.exportCurrent", defaultValue: "Export Current Organization…")) {
+                        saveCurrentWorkspaceAsOrganization(includeScrollback: true)
+                    }
+                    .disabled(currentWorkspace == nil)
+
+                    Divider()
 
                     if !orgs.isEmpty {
                         let recentOrgs = Array(orgs.prefix(5))
@@ -1144,6 +1166,59 @@ struct cmuxApp: App {
         AppDelegate.shared?.synchronizeActiveMainWindowContext(
             preferredWindow: NSApp.keyWindow ?? NSApp.mainWindow
         ) ?? tabManager
+    }
+
+    private func currentWorkspaceOrganizationFallbackName(_ workspace: Workspace) -> String {
+        let trimmedTitle = workspace.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty {
+            return trimmedTitle
+        }
+        return String(localized: "workspace.displayName.fallback", defaultValue: "Workspace")
+    }
+
+    private func promptRenameCurrentOrganization() {
+        guard let workspace = activeTabManager.selectedWorkspace else { return }
+
+        let alert = NSAlert()
+        alert.messageText = String(localized: "organization.name.title", defaultValue: "Name Organization")
+        alert.informativeText = String(localized: "organization.name.message", defaultValue: "Enter a name for this workspace's organization.")
+        alert.addButton(withTitle: String(localized: "organization.name.save", defaultValue: "Save"))
+        alert.addButton(withTitle: String(localized: "organization.name.cancel", defaultValue: "Cancel"))
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        input.stringValue = workspace.organizationName ?? currentWorkspaceOrganizationFallbackName(workspace)
+        alert.accessoryView = input
+        alert.window.initialFirstResponder = input
+
+        DispatchQueue.main.async {
+            alert.window.makeFirstResponder(input)
+            input.selectText(nil)
+        }
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let newName = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty else { return }
+        workspace.setOrganizationName(newName)
+    }
+
+    private func saveCurrentWorkspaceAsOrganization(includeScrollback: Bool) {
+        guard let workspace = activeTabManager.selectedWorkspace else { return }
+
+        let organizationName = workspace.organizationName ?? currentWorkspaceOrganizationFallbackName(workspace)
+        let snapshot = workspace.sessionSnapshot(includeScrollback: includeScrollback)
+
+        if includeScrollback {
+            WorkspaceOrganizationStore.exportWorkspace(snapshot, name: organizationName)
+            return
+        }
+
+        let organization = WorkspaceOrganization(name: organizationName, snapshot: snapshot)
+        let organizations = WorkspaceOrganizationStore.loadAll()
+        if organizations.count >= WorkspaceOrganizationStore.maxOrganizations,
+           let oldest = organizations.last {
+            WorkspaceOrganizationStore.remove(oldest.id)
+        }
+        WorkspaceOrganizationStore.save(organization)
     }
 
     private func decodeShortcut(from data: Data, fallback: StoredShortcut) -> StoredShortcut {
