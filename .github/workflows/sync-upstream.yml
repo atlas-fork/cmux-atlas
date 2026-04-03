@@ -1,0 +1,188 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync-upstream:
+    if: github.repository == 'atlas-fork/cmux-atlas'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SYNC_BRANCH: sync/upstream-main
+      UPSTREAM_REMOTE_URL: https://github.com/manaflow-ai/cmux.git
+      CONFLICT_ISSUE_TITLE: "Upstream sync blocked"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch origin and upstream
+        run: |
+          set -euo pipefail
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream "$UPSTREAM_REMOTE_URL"
+          else
+            git remote add upstream "$UPSTREAM_REMOTE_URL"
+          fi
+
+          git fetch origin main
+          git fetch upstream main
+
+      - name: Check drift
+        id: drift
+        run: |
+          set -euo pipefail
+          counts="$(git rev-list --left-right --count upstream/main...origin/main)"
+          behind="$(awk '{print $1}' <<<"$counts")"
+          ahead="$(awk '{print $2}' <<<"$counts")"
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Upstream Sync"
+            echo
+            echo "- origin/main: \`$(git rev-parse origin/main)\`"
+            echo "- upstream/main: \`$(git rev-parse upstream/main)\`"
+            echo "- behind: \`$behind\`"
+            echo "- ahead: \`$ahead\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Skip when already aligned
+        if: steps.drift.outputs.behind == '0'
+        run: |
+          echo "No upstream changes to sync."
+
+      - name: Merge upstream into sync branch
+        if: steps.drift.outputs.behind != '0'
+        id: merge
+        run: |
+          set -euo pipefail
+
+          git checkout -B "$SYNC_BRANCH" origin/main
+
+          if ! git merge --no-edit upstream/main; then
+            conflicts="$(git diff --name-only --diff-filter=U | sort || true)"
+            {
+              echo "merge_conflict=true"
+              echo "conflicts<<EOF"
+              printf '%s\n' "$conflicts"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort || true
+            exit 0
+          fi
+
+          if git diff --quiet origin/main...HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "merge_head=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Push sync branch
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git push --force-with-lease origin "$SYNC_BRANCH"
+
+      - name: Create or update pull request
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/upstream-sync-pr-body.md <<EOF
+          Automated upstream sync PR.
+
+          This branch was created by merging \`upstream/main\` into the fork's \`main\`.
+
+          Current drift snapshot:
+          - origin/main: \`$(git rev-parse origin/main)\`
+          - upstream/main: \`$(git rev-parse upstream/main)\`
+          - merge head: \`${{ steps.merge.outputs.merge_head }}\`
+
+          Review focus:
+          - fork-specific runtime drift
+          - release/workflow changes
+          - submodule updates and CI fallout
+          EOF
+
+          existing_pr_number="$(gh pr list \
+            --head "$SYNC_BRANCH" \
+            --base main \
+            --json number \
+            --jq '.[0].number // ""')"
+
+          if [[ -n "$existing_pr_number" ]]; then
+            gh pr edit "$existing_pr_number" \
+              --title "chore(sync): merge upstream/main into fork main" \
+              --body-file /tmp/upstream-sync-pr-body.md
+          else
+            gh pr create \
+              --base main \
+              --head "$SYNC_BRANCH" \
+              --title "chore(sync): merge upstream/main into fork main" \
+              --body-file /tmp/upstream-sync-pr-body.md
+          fi
+
+      - name: Create or update conflict issue
+        if: steps.merge.outputs.merge_conflict == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/upstream-sync-issue.md <<EOF
+          Automatic upstream sync from \`upstream/main\` into \`main\` hit conflicts.
+
+          Drift snapshot:
+          - origin/main: \`$(git rev-parse origin/main)\`
+          - upstream/main: \`$(git rev-parse upstream/main)\`
+          - behind: \`${{ steps.drift.outputs.behind }}\`
+          - ahead: \`${{ steps.drift.outputs.ahead }}\`
+
+          Conflicted files:
+          \`\`\`
+          ${{ steps.merge.outputs.conflicts }}
+          \`\`\`
+
+          Next step:
+          - resolve in a focused manual upstream-sync session
+          - merge \`upstream/main\` into \`main\` or update \`sync/upstream-main\`
+          EOF
+
+          existing_issue_number="$(gh issue list \
+            --state open \
+            --search "$CONFLICT_ISSUE_TITLE in:title" \
+            --json number,title \
+            --jq '.[] | select(.title == env.CONFLICT_ISSUE_TITLE) | .number' \
+            | head -n1)"
+
+          if [[ -n "$existing_issue_number" ]]; then
+            gh issue edit "$existing_issue_number" --body-file /tmp/upstream-sync-issue.md
+          else
+            gh issue create \
+              --title "$CONFLICT_ISSUE_TITLE" \
+              --body-file /tmp/upstream-sync-issue.md
+          fi
