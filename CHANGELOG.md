@@ -2,6 +2,12 @@
 
 All notable changes to cmux are documented here.
 
+## [0.63.1-atlas.8] - 2026-04-04
+
+### Fixed
+- Switch app RAM reporting from `ps` RSS to macOS task footprint accounting so the sidebar/footer memory meter reflects the real app memory reported by Force Quit and Activity Monitor much more closely
+- Harden workspace creation against stale selected-tab state during shortcut-driven tab creation, reducing the chance of crashing in `TabManager.addWorkspace(...)` when the current selection snapshot is inconsistent
+
 ## [0.63.1-atlas.7] - 2026-04-03
 
 ### Changed

@@ -9619,7 +9619,7 @@ private struct SidebarMemoryUsageButton: View {
             SidebarMemoryUsagePopoverRow(
                 title: appName,
                 subtitle: String(localized: "memory.popover.thisApp", defaultValue: "This app"),
-                value: MemoryUsageFormatter.detailedString(for: memoryUsageStore.snapshot.appResidentBytes)
+                value: MemoryUsageFormatter.detailedString(for: memoryUsageStore.snapshot.appFootprintBytes)
             )
 
             SidebarMemoryUsagePopoverSection(

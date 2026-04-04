@@ -293,7 +293,7 @@ enum SystemMemoryPressureLevel: Int, Equatable, Comparable {
 }
 
 struct MemoryUsageSnapshot: Equatable {
-    let appResidentBytes: Int64
+    let appFootprintBytes: Int64
     let trackedTerminalResidentBytes: Int64
     let workspaceResidentBytes: [UUID: Int64]
     let panelResidentBytes: [UUID: Int64]
@@ -307,7 +307,7 @@ struct MemoryUsageSnapshot: Equatable {
     let systemCompressedBytes: Int64
 
     static let empty = Self(
-        appResidentBytes: 0,
+        appFootprintBytes: 0,
         trackedTerminalResidentBytes: 0,
         workspaceResidentBytes: [:],
         panelResidentBytes: [:],
@@ -330,7 +330,7 @@ struct MemoryUsageSnapshot: Equatable {
     }
 
     var footerResidentBytes: Int64 {
-        max(0, appResidentBytes + trackedTerminalResidentBytes)
+        max(0, appFootprintBytes + trackedTerminalResidentBytes)
     }
 }
 
@@ -395,7 +395,6 @@ final class MemoryUsageStore: ObservableObject {
     }
 
     private struct PollContext {
-        let appPID: Int32
         let trackedPanels: [TrackedPanel]
     }
 
@@ -490,7 +489,7 @@ final class MemoryUsageStore: ObservableObject {
                 }
             }
 
-            return PollContext(appPID: getpid(), trackedPanels: trackedPanels)
+            return PollContext(trackedPanels: trackedPanels)
         }
     }
 
@@ -604,20 +603,34 @@ final class MemoryUsageStore: ObservableObject {
         )
     }
 
+    private func queryAppFootprintBytes() -> Int64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.stride / MemoryLayout<natural_t>.stride
+        )
+        let result = withUnsafeMutablePointer(to: &info) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), intPtr, &count)
+            }
+        }
+
+        guard result == KERN_SUCCESS else {
+            return 0
+        }
+        return Int64(info.phys_footprint)
+    }
+
     private func buildSnapshot(context: PollContext, rows: [PSRow], systemStats: SystemMemoryStats) -> MemoryUsageSnapshot {
+        let appPID = getpid()
         let trackedByTTY = context.trackedPanels.reduce(into: [String: TrackedPanel]()) { partialResult, panel in
             guard let normalizedTTY = normalizedTTY(panel.ttyName) else { return }
             partialResult[normalizedTTY] = panel
         }
 
-        var appResidentBytes: Int64 = 0
+        let appFootprintBytes = queryAppFootprintBytes()
         var panelBytes: [UUID: Int64] = [:]
 
         for row in rows {
-            if row.pid == context.appPID {
-                appResidentBytes = row.residentBytes
-            }
-
             guard let tty = row.tty,
                   let trackedPanel = trackedByTTY[tty] else {
                 continue
@@ -646,7 +659,7 @@ final class MemoryUsageStore: ObservableObject {
         .map { $0 }
 
         let topSystemProcesses = rows
-            .filter { $0.pid != context.appPID && $0.residentBytes > 0 }
+            .filter { $0.pid != appPID && $0.residentBytes > 0 }
             .sorted { lhs, rhs in
                 if lhs.residentBytes != rhs.residentBytes { return lhs.residentBytes > rhs.residentBytes }
                 return lhs.command.localizedCaseInsensitiveCompare(rhs.command) == .orderedAscending
@@ -702,7 +715,7 @@ final class MemoryUsageStore: ObservableObject {
         // Group top processes by workspace
         var grouped: [UUID?: (title: String, procs: [MemoryProcessSummary])] = [:]
         let significantProcesses = rows
-            .filter { $0.pid != context.appPID && $0.residentBytes > 1024 * 1024 }
+            .filter { $0.pid != appPID && $0.residentBytes > 1024 * 1024 }
             .sorted { $0.residentBytes > $1.residentBytes }
             .prefix(20)
 
@@ -736,7 +749,7 @@ final class MemoryUsageStore: ObservableObject {
             .sorted { $0.totalBytes > $1.totalBytes }
 
         return MemoryUsageSnapshot(
-            appResidentBytes: appResidentBytes,
+            appFootprintBytes: appFootprintBytes,
             trackedTerminalResidentBytes: panelBytes.values.reduce(0, +),
             workspaceResidentBytes: workspaceBytes,
             panelResidentBytes: panelBytes,
@@ -1964,9 +1977,19 @@ class TabManager: ObservableObject {
         sentryBreadcrumb("workspace.create", data: ["tabCount": nextTabCount])
         let requestedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTitle = requestedTitle.flatMap { $0.isEmpty ? nil : $0 } ?? "Terminal \(nextTabCount)"
+        let selectedWorkspace = snapshot.selectedWorkspace ?? snapshot.tabs.last
+        if snapshot.selectedTabId != nil, snapshot.selectedWorkspace == nil {
+            sentryBreadcrumb(
+                "workspace.create.staleSelection",
+                data: [
+                    "selectedTabId": snapshot.selectedTabId?.uuidString ?? "",
+                    "tabCount": snapshot.tabs.count
+                ]
+            )
+        }
         let explicitWorkingDirectory = normalizedWorkingDirectory(overrideWorkingDirectory)
-        let workingDirectory = explicitWorkingDirectory ?? preferredWorkingDirectoryForNewTab(snapshot: snapshot)
-        let inheritedConfig = inheritedTerminalConfigForNewWorkspace(workspace: snapshot.selectedWorkspace)
+        let workingDirectory = explicitWorkingDirectory ?? preferredWorkingDirectoryForNewTab(workspace: selectedWorkspace)
+        let inheritedConfig = inheritedTerminalConfigForNewWorkspace(workspace: selectedWorkspace)
         let ordinal = Self.nextPortOrdinal
         Self.nextPortOrdinal += 1
         let newWorkspace = Workspace(
@@ -2892,7 +2915,13 @@ class TabManager: ObservableObject {
     private func terminalPanelForWorkspaceConfigInheritanceSource(
         snapshot: WorkspaceCreationSnapshot
     ) -> TerminalPanel? {
-        guard let workspace = snapshot.selectedWorkspace else { return nil }
+        terminalPanelForWorkspaceConfigInheritanceSource(workspace: snapshot.selectedWorkspace)
+    }
+
+    private func terminalPanelForWorkspaceConfigInheritanceSource(
+        workspace: Workspace?
+    ) -> TerminalPanel? {
+        guard let workspace else { return nil }
         if let focusedTerminal = workspace.focusedTerminalPanel {
             return focusedTerminal
         }
@@ -2907,24 +2936,24 @@ class TabManager: ObservableObject {
     }
 
     func inheritedTerminalConfigForNewWorkspace(workspace: Workspace?) -> CmuxSurfaceConfigTemplate? {
-        inheritedTerminalConfigForNewWorkspace(snapshot: workspaceCreationSnapshot())
-    }
-
-    private func inheritedTerminalConfigForNewWorkspace(
-        snapshot: WorkspaceCreationSnapshot
-    ) -> CmuxSurfaceConfigTemplate? {
-        if let sourceSurface = terminalPanelForWorkspaceConfigInheritanceSource(snapshot: snapshot)?.surface.surface {
+        if let sourceSurface = terminalPanelForWorkspaceConfigInheritanceSource(workspace: workspace)?.surface.surface {
             return cmuxInheritedSurfaceConfig(
                 sourceSurface: sourceSurface,
                 context: GHOSTTY_SURFACE_CONTEXT_TAB
             )
         }
-        if let fallbackFontPoints = snapshot.selectedWorkspace?.lastRememberedTerminalFontPointsForConfigInheritance() {
+        if let fallbackFontPoints = workspace?.lastRememberedTerminalFontPointsForConfigInheritance() {
             var config = CmuxSurfaceConfigTemplate()
             config.fontSize = fallbackFontPoints
             return config
         }
         return nil
+    }
+
+    private func inheritedTerminalConfigForNewWorkspace(
+        snapshot: WorkspaceCreationSnapshot
+    ) -> CmuxSurfaceConfigTemplate? {
+        inheritedTerminalConfigForNewWorkspace(workspace: snapshot.selectedWorkspace)
     }
 
     private func normalizedWorkingDirectory(_ directory: String?) -> String? {
@@ -2973,17 +3002,23 @@ class TabManager: ObservableObject {
     }
 
     private func preferredWorkingDirectoryForNewTab(
-        snapshot: WorkspaceCreationSnapshot
+        workspace: Workspace?
     ) -> String? {
-        guard let tab = snapshot.selectedWorkspace else {
+        guard let workspace else {
             return nil
         }
-        let focusedDirectory = tab.focusedPanelId
-            .flatMap { tab.panelDirectories[$0] }
-        let candidate = focusedDirectory ?? tab.currentDirectory
+        let focusedDirectory = workspace.focusedPanelId
+            .flatMap { workspace.panelDirectories[$0] }
+        let candidate = focusedDirectory ?? workspace.currentDirectory
         let normalized = normalizeDirectory(candidate)
         let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : normalized
+    }
+
+    private func preferredWorkingDirectoryForNewTab(
+        snapshot: WorkspaceCreationSnapshot
+    ) -> String? {
+        preferredWorkingDirectoryForNewTab(workspace: snapshot.selectedWorkspace)
     }
 
     func moveTabToTop(_ tabId: UUID) {
