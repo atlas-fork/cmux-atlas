@@ -149,8 +149,10 @@ enum MainWindowAutosaveFrameSanitizer {
 
     static func sanitizeIfNeeded(
         defaults: UserDefaults = .standard,
-        screenVisibleFrames: [CGRect] = NSScreen.screens.map(\.visibleFrame)
+        screenVisibleFrames: [CGRect] = []
     ) {
+        // Avoid touching NSScreen during SwiftUI app init. On macOS 26 this can
+        // abort inside AppKit/HIServices before application registration settles.
         let records = invalidFrameRecords(
             in: defaults.dictionaryRepresentation(),
             screenVisibleFrames: screenVisibleFrames

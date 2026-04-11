@@ -2,6 +2,13 @@
 
 All notable changes to cmux are documented here.
 
+## [0.63.1-atlas.10] - 2026-04-11
+
+### Fixed
+- Reveal non-renderable files (archives, disk images, binaries, media, fonts) in Finder instead of opening them in the embedded browser panel when clicking local file links in the terminal
+- Avoid touching NSScreen during SwiftUI app initialization on macOS 26 where early AppKit/HIServices access can abort before application registration settles
+- Remove hardcoded developer build path from the bundled codex wrapper script
+
 ## [0.63.1-atlas.9] - 2026-04-07
 
 ### Added

@@ -7,12 +7,6 @@ find_real_codex() {
         return 0
     fi
 
-    local dev_build="/Users/timapple/Documents/guest/codex/codex-rs/target/debug/codex"
-    if [[ -x "$dev_build" ]]; then
-        printf '%s' "$dev_build"
-        return 0
-    fi
-
     local self_dir
     self_dir="$(cd "$(dirname "$0")" && pwd)"
     local IFS=:

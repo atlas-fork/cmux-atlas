@@ -515,6 +515,25 @@ final class GhosttyDefaultBackgroundNotificationDispatcher {
     }
 }
 
+/// File extensions that should be revealed in Finder instead of opened in the
+/// embedded browser panel. Covers archives, disk images, binaries, media, and
+/// other types that a browser cannot usefully render.
+private let terminalRevealInFinderExtensions: Set<String> = [
+    // Archives & disk images
+    "zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "dmg", "iso", "pkg", "deb", "rpm",
+    // Binaries & executables
+    "app", "exe", "msi", "bin", "dylib", "so", "a", "o", "framework",
+    // Media (images handled by Quick Look, not a browser)
+    "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "ico", "webp", "heic", "heif",
+    "mp3", "mp4", "mov", "avi", "mkv", "wav", "aac", "flac", "m4a", "m4v", "wmv",
+    // Documents best opened natively
+    "pages", "numbers", "key", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+    // Fonts
+    "ttf", "otf", "woff", "woff2",
+    // Other
+    "ipa", "xcarchive", "sketch", "fig",
+]
+
 private let terminalPositionedFileReferenceBareExtensions: Set<String> = [
     "c", "cc", "conf", "cpp", "css", "csv", "go", "h", "hpp", "html", "ini", "java",
     "js", "json", "jsx", "kt", "kts", "log", "lua", "m", "markdown", "md", "mdx", "mm",
@@ -2949,6 +2968,16 @@ class GhosttyApp {
                         return true
                     }
                     let fileURL = URL(fileURLWithPath: standardized)
+                    // Non-renderable files (archives, binaries, etc.) should be
+                    // revealed in Finder rather than opened in the embedded browser.
+                    let ext = NSString(string: standardized).pathExtension.lowercased()
+                    if terminalRevealInFinderExtensions.contains(ext) {
+                        #if DEBUG
+                        dlog("link.openURL localFile revealing in Finder path=\(standardized)")
+                        #endif
+                        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+                        return true
+                    }
                     if let targetPane = workspace.preferredBrowserTargetPane(fromPanelId: sourcePanelId) {
                         return workspace.newBrowserSurface(inPane: targetPane, url: fileURL, focus: true) != nil
                     } else {
