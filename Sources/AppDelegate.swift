@@ -2213,9 +2213,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var lastTypingActivityAt: TimeInterval = 0
     private var didHandleExplicitOpenIntentAtStartup = false
     private var isTerminatingApp = false
-    // Set to true when the user has already confirmed quit via the warning dialog,
-    // so applicationShouldTerminate does not show a second alert.
-    private var isQuitWarningConfirmed = false
     private var didInstallLifecycleSnapshotObservers = false
     private var didDisableSuddenTermination = false
     private var commandPaletteVisibilityByWindowId: [UUID: Bool] = [:]
@@ -9084,9 +9081,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if response == .alertFirstButtonReturn {
-            // Mark as confirmed so applicationShouldTerminate does not show a
-            // second alert when NSApp.terminate re-enters the delegate callback.
-            isQuitWarningConfirmed = true
             NSApp.terminate(nil)
         }
         return true

@@ -113,7 +113,6 @@
 					A5008381 /* BrowserFindJavaScriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5008380 /* BrowserFindJavaScriptTests.swift */; };
 					A5008383 /* CommandPaletteSearchEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5008382 /* CommandPaletteSearchEngineTests.swift */; };
 		AA100011 /* AISessionDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA100001 /* AISessionDetector.swift */; };
-		AA100012 /* AISessionResumeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA100002 /* AISessionResumeView.swift */; };
 		AA100014 /* EditorSyncController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA100004 /* EditorSyncController.swift */; };
 		AA100015 /* EditorSyncTitlebarButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA100005 /* EditorSyncTitlebarButton.swift */; };
 		DA7A10CA710E000000000003 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DA7A10CA710E000000000001 /* Localizable.xcstrings */; };
@@ -314,7 +313,6 @@
 				10D684CFFB8CDEF89CE2D9E1 /* TabManagerSessionSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TabManagerSessionSnapshotTests.swift; sourceTree = "<group>"; };
 				C1A2B3C4D5E6F70800000002 /* CmuxConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxConfigTests.swift; sourceTree = "<group>"; };
 		AA100001 /* AISessionDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionDetector.swift; sourceTree = "<group>"; };
-		AA100002 /* AISessionResumeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionResumeView.swift; sourceTree = "<group>"; };
 		AA100004 /* EditorSyncController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorSyncController.swift; sourceTree = "<group>"; };
 		AA100005 /* EditorSyncTitlebarButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorSyncTitlebarButton.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -485,7 +483,6 @@
 				A5001222 /* WindowAccessor.swift */,
 				A5001611 /* SessionPersistence.swift */,
 				AA100001 /* AISessionDetector.swift */,
-				AA100002 /* AISessionResumeView.swift */,
 				AA100004 /* EditorSyncController.swift */,
 				AA100005 /* EditorSyncTitlebarButton.swift */,
 				A5001641 /* RemoteRelayZshBootstrap.swift */,
@@ -792,7 +789,6 @@
 				A500120C /* WindowAccessor.swift in Sources */,
 				A5001610 /* SessionPersistence.swift in Sources */,
 				AA100011 /* AISessionDetector.swift in Sources */,
-				AA100012 /* AISessionResumeView.swift in Sources */,
 				AA100014 /* EditorSyncController.swift in Sources */,
 				AA100015 /* EditorSyncTitlebarButton.swift in Sources */,
 				A5001640 /* RemoteRelayZshBootstrap.swift in Sources */,

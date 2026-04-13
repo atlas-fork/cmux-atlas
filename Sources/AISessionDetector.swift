@@ -495,17 +495,5 @@ enum AISessionDetector {
 // MARK: - Claude Sessions Index Model
 
 struct ClaudeSessionsIndex: Decodable {
-    let entries: [ClaudeSessionEntry]
     let originalPath: String?
-}
-
-struct ClaudeSessionEntry: Decodable {
-    let sessionId: String
-    let fileMtime: Double?
-    let firstPrompt: String?
-    let messageCount: Int?
-    let created: String?
-    let modified: String?
-    let gitBranch: String?
-    let projectPath: String?
 }
