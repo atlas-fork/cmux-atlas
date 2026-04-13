@@ -130,7 +130,7 @@ if [[ "$RUN_SWIFT" == "1" ]]; then
         printf "\033[32m%s passed\033[0m\n" "$count"
         SWIFT_PASSED=$((SWIFT_PASSED + count))
         PASSED=$((PASSED + count))
-    elif echo "$swift_output" | grep -q "BUILD FAILED\|Test Suite.*failed"; then
+    elif echo "$swift_output" | grep -q "BUILD FAILED\|Test Suite.*failed\|\*\* TEST FAILED \*\*\|Testing failed:"; then
         count=$(echo "$swift_output" | grep -oE '[0-9]+ failure' | grep -oE '[0-9]+' | head -1 || echo "1")
         printf "\033[31mFAILED\033[0m\n"
         echo "$swift_output" | grep -E "error:|failed|FAIL" | tail -10

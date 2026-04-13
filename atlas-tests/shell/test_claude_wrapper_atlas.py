@@ -2,8 +2,8 @@
 """
 Atlas-specific regression tests for Resources/bin/claude wrapper.
 
-Covers features added in the atlas fork: --yolo alias, resume flag detection,
-CLAUDECODE unset, session ID generation.
+Covers features added in the atlas fork: resume flag detection,
+CLAUDECODE unset, session ID generation, and wrapper passthrough behavior.
 """
 
 from __future__ import annotations
@@ -128,12 +128,12 @@ exit 0
 
 
 class TestClaudeWrapperAtlas(unittest.TestCase):
-    def test_yolo_maps_to_dangerously_skip_permissions(self):
-        """--yolo is normalized to --dangerously-skip-permissions."""
+    def test_yolo_passes_through_unchanged(self):
+        """--yolo is passed through unchanged by the wrapper."""
         rc, args, _, stderr = run_wrapper(argv=["--yolo"])
         self.assertEqual(rc, 0, f"Wrapper failed: {stderr}")
-        self.assertIn("--dangerously-skip-permissions", args)
-        self.assertNotIn("--yolo", args)
+        self.assertIn("--yolo", args)
+        self.assertNotIn("--dangerously-skip-permissions", args)
 
     def test_resume_flag_skips_session_id(self):
         """--resume <id> suppresses --session-id injection."""
