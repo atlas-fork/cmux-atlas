@@ -42,8 +42,8 @@ Three shim scripts bundled inside the cmux app, added to PATH first via shell in
 
 | Wrapper | What it does |
 |---------|-------------|
-| `claude` | Injects `--settings` JSON with lifecycle hooks (session-start, stop, notification, prompt-submit, pre-tool-use) + generates `--session-id` |
-| `codex` | Injects `--enable codex_hooks` + hook commands (session-start, stop) |
+| `claude` | Injects `--settings` JSON with lifecycle hooks (session-start, stop, session-end, notification, prompt-submit, pre-tool-use) + generates `--session-id` when starting a fresh session |
+| `codex` | Injects `--enable codex_hooks` + hook commands (session-start, stop by default; prompt-submit/session-end only for compatible dev builds) |
 | `open` | Routes `open https://...` to cmux's embedded browser instead of system browser |
 
 All three use the same pattern:
@@ -54,6 +54,13 @@ All three use the same pattern:
 5. `exec` the real binary (wrapper PID becomes the real process PID)
 
 When outside cmux (no `CMUX_SURFACE_ID`), wrappers pass through directly — no hooks injected.
+
+Current wrapper-specific notes:
+
+- Claude supports `CMUX_CUSTOM_CLAUDE_PATH` as an explicit override when you want cmux to launch a specific Claude binary instead of resolving from PATH.
+- Claude adds an OOM-guard `NODE_OPTIONS` require-path while preserving/restoring the original `NODE_OPTIONS` value for the launched process.
+- Codex no longer honors `CMUX_CODEX_REAL_BIN`; PATH resolution is the only supported real-binary lookup path now.
+- Codex enables `prompt-submit` and `session-end` only when `CMUX_CODEX_EXTENDED_HOOKS=1` or when `ovm` launches a Codex dev build (`OVM_PRODUCT=codex` plus a dev-build signal).
 
 ### Hook Communication
 
@@ -98,7 +105,14 @@ Hook data is stored in:
 | `CMUX_CODEX_PID` | Same for codex |
 | `CMUX_CLAUDE_HOOKS_DISABLED` | Set to `1` to skip hook injection |
 | `CMUX_CODEX_HOOKS_DISABLED` | Set to `1` to skip hook injection |
+| `CMUX_CODEX_EXTENDED_HOOKS` | Explicit override for `session_end` and `user_prompt_submit` hooks |
+| `OVM_PRODUCT` | Product name exported by `ovm` during launches (for example `codex`) |
+| `OVM_VERSION` | Resolved version exported by `ovm` during launches |
+| `OVM_DEV_BUILD` | Set to `1` by `ovm` for Codex dev launches; cmux uses this to enable extended Codex hooks |
+| `CMUX_CUSTOM_CLAUDE_PATH` | Optional explicit Claude binary override |
 | `CMUX_BUNDLE_ID` | Bundle ID for the `open` wrapper's settings domain |
+| `CMUX_ORIGINAL_NODE_OPTIONS` | Preserved pre-wrapper `NODE_OPTIONS` value for Claude launches |
+| `CMUX_ORIGINAL_NODE_OPTIONS_PRESENT` | Whether `NODE_OPTIONS` existed before the Claude wrapper adjusted it |
 
 ### Session Detection
 

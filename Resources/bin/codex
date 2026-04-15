@@ -26,6 +26,20 @@ cmux_socket_available() {
         "$cmux_bin" --socket "$socket" ping >/dev/null 2>&1
 }
 
+cmux_codex_extended_hooks_enabled() {
+    if [[ "${CMUX_CODEX_EXTENDED_HOOKS:-0}" == "1" ]]; then
+        return 0
+    fi
+
+    [[ "${OVM_PRODUCT:-}" == "codex" ]] || return 1
+
+    if [[ "${OVM_DEV_BUILD:-0}" == "1" ]]; then
+        return 0
+    fi
+
+    [[ "${OVM_VERSION:-}" == dev:* ]]
+}
+
 REAL_CODEX="$(find_real_codex)" || { echo "Error: codex not found in PATH" >&2; exit 127; }
 
 IN_CMUX=0
@@ -45,10 +59,23 @@ case "${1:-}" in
         ;;
 esac
 
+# Stock codex only supports session_start and stop hook events.
+# Our codex fork adds session_end and user_prompt_submit.
+# Enable the extended events only when explicitly requested or when ovm
+# launched a Codex dev build for the cmux/ovm ecosystem.
+HOOKS=(
+    --hook "session_start=cmux codex-hook session-start"
+    --hook "stop=cmux codex-hook stop"
+)
+if cmux_codex_extended_hooks_enabled; then
+    HOOKS+=(
+        --hook "user_prompt_submit=cmux codex-hook prompt-submit"
+        --hook "session_end=cmux codex-hook session-end"
+    )
+fi
+
 exec \
     "$REAL_CODEX" \
     --enable codex_hooks \
-    --hook "session_start=cmux codex-hook session-start" \
-    --hook "session_end=cmux codex-hook session-end" \
-    --hook "stop=cmux codex-hook stop" \
+    "${HOOKS[@]}" \
     "$@"

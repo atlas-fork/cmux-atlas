@@ -818,15 +818,12 @@ struct cmuxApp: App {
                     _ = activeTabManager.selectedWorkspace?.refreshAIResumes()
                 }
 
-                Button(String(localized: "menu.file.newClaudeCode", defaultValue: "New Claude Code")) {
-                    activeTabManager.selectedWorkspace?.launchQuickAIAgent(.claudeCode)
+                ForEach(AIQuickLaunchMenuCommandSpec.all, id: \.title) { command in
+                    Button(command.title) {
+                        activeTabManager.selectedWorkspace?.launchQuickAIAgent(command.agent)
+                    }
+                    .keyboardShortcut(command.keyEquivalent, modifiers: command.eventModifiers)
                 }
-                .keyboardShortcut("a", modifiers: [.command, .option])
-
-                Button(String(localized: "menu.file.newCodex", defaultValue: "New Codex")) {
-                    activeTabManager.selectedWorkspace?.launchQuickAIAgent(.codex)
-                }
-                .keyboardShortcut("x", modifiers: [.command, .option])
 
                 Divider()
 

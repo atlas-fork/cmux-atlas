@@ -5,6 +5,41 @@ enum AIQuickLaunchAgent {
     case claudeCode
 }
 
+struct AIQuickLaunchMenuCommandSpec {
+    let agent: AIQuickLaunchAgent
+    let title: String
+    let keyCharacter: Character
+    let eventModifiers: EventModifiers
+
+    var keyEquivalent: KeyEquivalent {
+        KeyEquivalent(keyCharacter)
+    }
+
+    static let all: [AIQuickLaunchMenuCommandSpec] = [
+        .init(
+            agent: .claudeCode,
+            title: String(localized: "menu.file.newClaudeCode", defaultValue: "New Claude Code"),
+            keyCharacter: "a",
+            eventModifiers: [.command, .option]
+        ),
+        .init(
+            agent: .codex,
+            title: String(localized: "menu.file.newCodex", defaultValue: "New Codex"),
+            keyCharacter: "x",
+            eventModifiers: [.command, .option]
+        ),
+    ]
+
+    static func command(for agent: AIQuickLaunchAgent) -> AIQuickLaunchMenuCommandSpec {
+        switch agent {
+        case .claudeCode:
+            return all[0]
+        case .codex:
+            return all[1]
+        }
+    }
+}
+
 @MainActor
 final class AIQuickLaunchController: ObservableObject {
     static let shared = AIQuickLaunchController()

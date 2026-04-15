@@ -246,6 +246,27 @@ enum AIAgentType: String, Codable, Sendable {
     case codex = "codex"
 }
 
+/// Legacy compatibility snapshot for tests that still model a live tracked agent
+/// process separately from the persisted resume-action record.
+struct ActiveAISessionSnapshot: Codable, Sendable, Equatable {
+    var agentType: AIAgentType
+    var sessionId: String?
+    var workingDirectory: String?
+    var projectPath: String?
+    var pid: Int32
+    var lastUpdatedAt: TimeInterval
+
+    var restoredTerminalAction: RestoredTerminalActionSnapshot {
+        RestoredTerminalActionSnapshot(
+            agentType: agentType,
+            sessionId: sessionId,
+            workingDirectory: workingDirectory,
+            projectPath: projectPath,
+            lastSeenActive: lastUpdatedAt
+        )
+    }
+}
+
 /// A generic post-restore terminal action. Today this is backed by agent
 /// session resume providers, but the workspace/UI layer only depends on this
 /// transport object rather than any specific CLI integration.
@@ -345,6 +366,7 @@ protocol RestoredTerminalActionProvider {
     static func restoredTerminalAction(
         workspaceId: UUID,
         panelId: UUID,
+        workingDirectory: String?,
         processEnv: [String: String],
         fileManager: FileManager
     ) -> RestoredTerminalActionSnapshot?
@@ -359,6 +381,7 @@ enum RestoredTerminalActionRegistry {
     static func latestAction(
         workspaceId: UUID,
         panelId: UUID,
+        workingDirectory: String?,
         processEnv: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> RestoredTerminalActionSnapshot? {
@@ -367,6 +390,7 @@ enum RestoredTerminalActionRegistry {
                 $0.restoredTerminalAction(
                     workspaceId: workspaceId,
                     panelId: panelId,
+                    workingDirectory: workingDirectory,
                     processEnv: processEnv,
                     fileManager: fileManager
                 )
@@ -415,6 +439,7 @@ enum ClaudeHookSessionSnapshotStore: RestoredTerminalActionProvider {
     static func restoredTerminalAction(
         workspaceId: UUID,
         panelId: UUID,
+        workingDirectory: String?,
         processEnv: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> RestoredTerminalActionSnapshot? {
@@ -534,6 +559,7 @@ enum CodexHookSessionSnapshotStore: RestoredTerminalActionProvider {
     static func restoredTerminalAction(
         workspaceId: UUID,
         panelId: UUID,
+        workingDirectory: String?,
         processEnv: [String: String] = ProcessInfo.processInfo.environment,
         fileManager: FileManager = .default
     ) -> RestoredTerminalActionSnapshot? {
@@ -542,12 +568,22 @@ enum CodexHookSessionSnapshotStore: RestoredTerminalActionProvider {
         let workspaceToken = workspaceId.uuidString.lowercased()
         let panelToken = panelId.uuidString.lowercased()
 
-        guard let record = state.sessions.values
+        let exactMatch = state.sessions.values
             .filter({
                 $0.workspaceId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == workspaceToken &&
                 $0.surfaceId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == panelToken
             })
-            .max(by: { $0.updatedAt < $1.updatedAt }) else {
+            .max(by: { $0.updatedAt < $1.updatedAt })
+        let directoryToken = normalizedOptional(workingDirectory)?.lowercased()
+        let fallbackMatch = directoryToken.flatMap { directoryToken in
+            state.sessions.values
+                .filter({
+                    normalizedOptional($0.cwd)?.lowercased() == directoryToken
+                })
+                .max(by: { $0.updatedAt < $1.updatedAt })
+        }
+
+        guard let record = exactMatch ?? fallbackMatch else {
             return nil
         }
 

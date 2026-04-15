@@ -26,6 +26,53 @@ public enum PanelFocusIntent: Equatable {
     case browser(BrowserPanelFocusIntent)
 }
 
+public enum WorkspaceAttentionFlashReason: String, Equatable, Sendable {
+    case navigation
+    case notificationArrival
+    case notificationDismiss
+    case manualUnreadDismiss
+    case debug
+}
+
+enum WorkspaceAttentionFlashAccent: Equatable, Sendable {
+    case notificationBlue
+    case navigationTeal
+
+    var strokeColor: NSColor {
+        switch self {
+        case .notificationBlue:
+            return .systemBlue
+        case .navigationTeal:
+            return .systemTeal
+        }
+    }
+}
+
+struct WorkspaceAttentionFlashPresentation: Equatable, Sendable {
+    let accent: WorkspaceAttentionFlashAccent
+    let glowOpacity: Double
+    let glowRadius: CGFloat
+}
+
+enum WorkspaceAttentionCoordinator {
+    static func flashStyle(for reason: WorkspaceAttentionFlashReason) -> WorkspaceAttentionFlashPresentation {
+        switch reason {
+        case .navigation:
+            return WorkspaceAttentionFlashPresentation(
+                accent: .navigationTeal,
+                glowOpacity: 0.2,
+                glowRadius: 4
+            )
+        case .notificationArrival, .notificationDismiss, .manualUnreadDismiss, .debug:
+            return WorkspaceAttentionFlashPresentation(
+                accent: .notificationBlue,
+                glowOpacity: 0.6,
+                glowRadius: 6
+            )
+        }
+    }
+}
+
 enum FocusFlashCurve: Equatable {
     case easeIn
     case easeOut

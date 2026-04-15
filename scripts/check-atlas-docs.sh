@@ -19,7 +19,7 @@ fi
 
 devlog_files=()
 for path in "${staged_files[@]}"; do
-  if [[ "$path" == atlas-docs/devlog/*.md ]]; then
+  if [[ "$path" == atlas-docs/devlog/*.md && "$path" != atlas-docs/devlog/README.md ]]; then
     devlog_files+=("$path")
   fi
 done

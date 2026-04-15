@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   validate:
-    runs-on: [self-hosted, atlas-macos-arm64]
+    runs-on: macos-15
     timeout-minutes: 35
     env:
       TARGET_REF: ${{ inputs.ref || github.ref }}

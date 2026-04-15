@@ -1,143 +1,96 @@
 # Atlas Commit Classification
 
-This is a retrospective map of the Atlas-only commits that are still unique to this fork relative to `upstream/main`, as of `v1.38.1-atlas.4`.
+This is the current review of the Atlas fork delta relative to `main`, using:
+
+- merge base: `e9afc22353128d7c9fa273d8432cbf2fe0e36157`
+- reviewed branch tip: `feat/rebuild-ai-resume-core` as of `2026-04-13`
 
 The goal is to separate:
 
-- real Atlas product work
-- fork/release/CI plumbing
-- upstream-merge smoothing and migration-only fixes
+- Atlas product work we intentionally carry
+- rebuild/parity work that was needed to land the line cleanly
+- test/docs/process work
+- pure release markers
 
-That distinction matters because the migration-only bucket should not be mistaken for durable product differentiation.
+## 1. Atlas Product Features And User-Facing Fixes
 
-## 1. Real Atlas Product Features And User-Facing Fixes
-
-These are the commits that represent actual fork behavior, user-visible features, or user-visible bug fixes we intentionally want to carry.
-
-| Commit | Type | Summary |
-| --- | --- | --- |
-| `016a03b6` | feature | Rebrand fork to `cmux Atlas` for side-by-side coexistence |
-| `edf338b9` | feature | Add AI session resume, editor sync, memory monitor, and markdown panel |
-| `aee78855` | feature | Add `Copy Path` and `Reveal in Finder` to tab/workspace context menus |
-| `f4e89870` | fix | Avoid pasteboard recursion in session snapshots |
-| `1cf3953f` | fix | Unify AI session resume lifecycle |
-| `ca381981` | fix | Show tracked terminal memory in footer instead of app-only memory |
-| `52e3ac50` | fix | Restore relaunch session recovery and fix zsh integration regression |
-| `08d68979` | fix | Add AI resume refresh diagnostics, Sentry signals, and workspace-scoped refresh action |
-
-Notes:
-
-- This is the bucket we should think of as "the Atlas product."
-- If we ever rebuild the fork cleanly from fresh upstream, these are the changes we should evaluate first for reapplication.
-
-## 2. Fork Plumbing, Release, And CI Policy
-
-These commits are important for operating the fork, but they are not product features.
+These commits materially define or refine Atlas behavior on the rebuilt line.
 
 | Commit | Type | Summary |
 | --- | --- | --- |
-| `37f6ef0b` | plumbing | Point submodules to Atlas forks |
-| `998d9984` | test/ci | Add fork-specific tests and CI guard tests |
-| `2b40e868` | ci | Use self-hosted runner with Atlas branding |
-| `1cf68ffa` | infra | Update GhosttyKit checksum for Atlas fork |
-| `bba93070` | test/ci | Remove Ghostty CLI-helper regression tests |
-| `b7c701eb` | dev | Launch branded Release app from `reloadp` |
-| `8332ffca` | ci | Automate upstream sync PRs |
-| `d0c607e8` | release | Align fork release pipeline with Atlas update channel |
-| `b606c873` | ops | Update Sentry config for fork and add README fork note |
-| `303db231` | signing | Include system keychains in CI signing search list |
-| `e7bc2748` | signing | Install Apple intermediate certs in CI signing keychain |
-| `f0bfcc34` | ci | Add npm global bin to `PATH` for `create-dmg` |
-| `86170d56` | signing | Sign embedded frameworks in inside-out order |
-| `8db05501` | docs | Document upstream merge process |
-| `bb6b080b` | ci/policy | Gate external PRs and run E2E on internal PRs |
-| `94bbc049` | ci | Add targeted merge validation workflow |
-| `c8a42c6e` | ci | Duplicate targeted merge validation workflow commit during rollout |
-| `6c1bf547` | ci | Fix merge validation watcher |
-| `2fbd14a9` | ci | Same merge validation watcher fix cherry-picked onto `main` |
-| `609658f6` | ci | Prioritize release workflows |
+| `6345ad23` | feature | Establish Atlas branding, app identity, and release shell |
+| `3ea7063b` | feature | Add AI session resume, editor sync, memory monitor, and markdown panel workflows |
+| `f60ccdc1` | fix | Refresh memory state and avoid session-snapshot pasteboard recursion |
+| `edb8c5f7` | fix | Restore editor sync and panel recovery parity |
+| `aceeafc0` | fix | Restore workspace tab affordances and inline resume restore |
+| `82c62af1` | fix | Restore terminal link and tab affordance parity |
+| `eda6f17b` | fix/ui | Move organization actions to the menu bar and improve current-workspace organization affordances |
+| `668319fc` | fix(atlas) | Respect the browser toggle when opening local terminal file links |
+| `0acf308f` | fix(atlas) | Realign the Claude wrapper with upstream behavior while preserving Atlas hook/session behavior |
+| `dc4005f2` | cleanup | Remove dead Atlas fork code that no longer contributes to product behavior |
 
 Notes:
 
-- These commits are durable, but they are operational rather than product-specific.
-- When reviewing future release risk, do not mix this bucket into user-facing change summaries.
+- This is the set to think of as the current Atlas product surface.
+- `atlas-docs/feature-inventory.md` is the current user-facing summary of what this bucket contains.
 
-## 3. Upstream-Merge Smoothing And Migration-Only Work
+## 2. Rebuild / Parity / Merge-Smoothing Work
 
-These commits mostly exist because the upstream merge was incomplete or rough. They helped the migration land, but they are not the Atlas product.
+These commits were necessary to make the rebuilt line function correctly on a fresh upstream base, but they are not the clearest expression of Atlas differentiation by themselves.
 
 | Commit | Type | Summary |
 | --- | --- | --- |
-| `95d7fed1` | merge-fix | Restore upstream merge CI compatibility |
-| `5187fbfe` | merge-fix | Restore upstream merge compile compatibility |
-| `1851b26f` | merge-fix | Restore command palette focus test helper |
-| `5c151be4` | merge-fix | Restore workspace creation test seams |
-| `fb43b9bf` | merge-fix | Restore Git metadata test helpers |
-| `f916d0d9` | merge-fix | Restore remote and snapshot test helpers |
-| `ce6e055d` | merge-fix | Restore Ghostty config test helpers |
-| `d48ad649` | merge-fix | Restore browser Return/IME seam |
-| `fffd73ad` | merge-fix | Restore stale surface ownership guards |
-| `21e8a1ae` | merge-fix | Quarantine stale inherited surfaces |
+| `4de5a4f9` | rebuild-fix | Align AI resume core with the fresh upstream state |
+| `f6df6884` | rebuild-fix | Restore resume observability and recovery behavior |
+| `ac7d9e26` | rebuild-fix | Align resume recovery with the rebuilt upstream state |
+| `6063afa2` | rebuild-fix | Avoid depending on newer Bonsplit-only tab-bar hooks |
+| `84dc3c02` | rebuild-fix | Update Bonsplit for restored workspace tab affordances |
 
 Notes:
 
-- Some of these commits now protect real runtime behavior.
-- Even so, they were introduced as merge repair, not as intentional Atlas differentiation.
-- This is the bucket we should treat as evidence that the merge process itself needs to improve.
+- Some of this work protects real runtime behavior.
+- Even so, this bucket mainly reflects the cost of carrying the rebuilt fork cleanly.
+
+## 3. Tests, Docs, And Process
+
+These commits improve confidence, maintainability, and workflow rather than shipping end-user features directly.
+
+| Commit | Type | Summary |
+| --- | --- | --- |
+| `e7617daa` | test | Cover workspace tab path actions on the rebuilt line |
+| `63577ead` | build | Remove a release build warning |
+| `c0a9cbde` | ci | Stabilize release signing by setting the temporary keychain as default |
+| `84977f80` | docs/process | Add upstream sync workflow and local ideas scratch |
+| `5a45d79b` | test | Add the Atlas regression test harness |
+| `00b848ad` | test | Add Atlas feature tests to the Swift test target |
+| `2c49d7a2` | test | Fix Atlas test expectations and Swift failure parsing |
 
 ## 4. Release Markers
 
-These commits are versioning markers, not feature work.
+These commits are release/version markers rather than standalone feature work.
 
 | Commit | Tag |
 | --- | --- |
-| `b0a69243` | `v0.62.2-atlas.2` |
-| `b952c9be` | `v0.62.2-atlas.3` |
-| `f7e89047` | `v0.62.2-atlas.4` |
-| `a53d3f9f` | `v0.62.2-atlas.5` |
-| `266aca27` | `v1.38.1-atlas.3` |
-| `0b74eed2` | `v1.38.1-atlas.4` |
+| `47683d67` | `v1.38.1-atlas.6` |
+| `4469143f` | `v1.38.1-atlas.7` |
+| `e764205e` | `v1.38.1-atlas.8` |
+| `61cbb355` | `v0.63.1-atlas.1` |
+| `2713d157` | `v0.63.1-atlas.2` |
+| `36965896` | `v0.63.1-atlas.3` |
+| `a68b4d86` | `v0.63.1-atlas.4` |
+| `98122b98` | `v0.63.1-atlas.5` |
+| `9d53c684` | `v0.63.1-atlas.6` |
+| `a7ed34b6` | `v0.63.1-atlas.7` |
+| `06feceaa` | `v0.63.1-atlas.8` |
+| `46157faa` | `v0.63.1-atlas.9` |
+| `53d1b911` | `v0.63.1-atlas.10` |
+| `a8a68f6c` | `v0.63.1-atlas.11`, `v0.63.1-atlas.12`, `v0.63.1-atlas.13` |
 
-## 5. Merge Landmarks
+## 5. Practical Read
 
-These are important for history, but they are not feature commits.
+When summarizing the fork:
 
-| Commit | Summary |
-| --- | --- |
-| `00e58d58` | Merge upstream into Atlas fork on the older line |
-| `b1d3b0dc` | Merge `upstream/main` into `review/upstream-sync-20260328` |
-| `facbec05` | Merge review branch back into `main` |
-
-## 6. How To Label Future Commits
-
-Going forward, we should make the distinction explicit in commit messages.
-
-Recommended prefixes:
-
-- `feat(atlas): ...`
-  - new Atlas-only product features
-- `fix(atlas): ...`
-  - user-facing Atlas bug fixes
-- `ci(atlas): ...`
-  - fork CI and release pipeline changes
-- `fix(merge): ...`
-  - merge-repair or migration-smoothing work only
-- `docs(merge): ...`
-  - merge-process documentation
-- `release: ...`
-  - version bumps and release markers only
-
-Examples:
-
-- `feat(atlas): add AI resume refresh command`
-- `fix(atlas): restore relaunch session recovery`
-- `fix(merge): restore stale surface ownership guards`
-- `ci(atlas): add targeted merge validation workflow`
-
-## 7. Practical Rule
-
-When deciding whether a change should survive a fresh fork rebuild:
-
-1. Carry all of section 1 by default.
-2. Carry section 2 only if it is still operationally needed.
-3. Re-evaluate section 3 from scratch rather than assuming it is intrinsically valuable.
+1. Talk about section 1 as the current Atlas product.
+2. Mention section 2 only when discussing rebuild cost, maintenance burden, or upstream-sync risk.
+3. Mention section 3 when discussing release confidence, workflow, or repo quality.
+4. Do not confuse section 4 with new feature delivery.

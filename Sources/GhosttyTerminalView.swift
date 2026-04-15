@@ -534,6 +534,23 @@ let terminalRevealInFinderExtensions: Set<String> = [
     "ipa", "xcarchive", "sketch", "fig",
 ]
 
+enum TerminalLocalFileOpenDisposition: Equatable {
+    case revealInFinder
+    case openExternally
+    case openInCmuxBrowser
+}
+
+func terminalLocalFileOpenDisposition(
+    path: String,
+    openInCmuxBrowser: Bool
+) -> TerminalLocalFileOpenDisposition {
+    let ext = NSString(string: path).pathExtension.lowercased()
+    if terminalRevealInFinderExtensions.contains(ext) {
+        return .revealInFinder
+    }
+    return openInCmuxBrowser ? .openInCmuxBrowser : .openExternally
+}
+
 private let terminalPositionedFileReferenceBareExtensions: Set<String> = [
     "c", "cc", "conf", "cpp", "css", "csv", "go", "h", "hpp", "html", "ini", "java",
     "js", "json", "jsx", "kt", "kts", "log", "lua", "m", "markdown", "md", "mdx", "mm",
@@ -2968,27 +2985,27 @@ class GhosttyApp {
                         return true
                     }
                     let fileURL = URL(fileURLWithPath: standardized)
-                    // Non-renderable files (archives, binaries, etc.) should be
-                    // revealed in Finder rather than opened in the embedded browser.
-                    let ext = NSString(string: standardized).pathExtension.lowercased()
-                    if terminalRevealInFinderExtensions.contains(ext) {
+                    switch terminalLocalFileOpenDisposition(
+                        path: standardized,
+                        openInCmuxBrowser: BrowserLinkOpenSettings.openTerminalLinksInCmuxBrowser()
+                    ) {
+                    case .revealInFinder:
                         #if DEBUG
                         dlog("link.openURL localFile revealing in Finder path=\(standardized)")
                         #endif
                         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
                         return true
-                    }
-                    // Respect the "Open Links in cmux Browser" toggle for local files too.
-                    if !BrowserLinkOpenSettings.openTerminalLinksInCmuxBrowser() {
+                    case .openExternally:
                         #if DEBUG
                         dlog("link.openURL localFile cmuxBrowser=disabled, opening externally path=\(standardized)")
                         #endif
                         return NSWorkspace.shared.open(fileURL)
-                    }
-                    if let targetPane = workspace.preferredBrowserTargetPane(fromPanelId: sourcePanelId) {
-                        return workspace.newBrowserSurface(inPane: targetPane, url: fileURL, focus: true) != nil
-                    } else {
-                        return workspace.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, url: fileURL) != nil
+                    case .openInCmuxBrowser:
+                        if let targetPane = workspace.preferredBrowserTargetPane(fromPanelId: sourcePanelId) {
+                            return workspace.newBrowserSurface(inPane: targetPane, url: fileURL, focus: true) != nil
+                        } else {
+                            return workspace.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, url: fileURL) != nil
+                        }
                     }
                 }
             case let .external(url):
@@ -5182,6 +5199,12 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     fileprivate func pushTargetSurfaceSize(_ size: CGSize) -> Bool {
         updateSurfaceSize(size: size)
     }
+
+#if DEBUG
+    fileprivate func debugPendingSurfaceSize() -> CGSize? {
+        pendingSurfaceSize
+    }
+#endif
 
     /// Force a full size reconciliation for the current bounds.
     /// Keep the drawable-size cache intact so redundant refresh paths do not
@@ -8830,6 +8853,10 @@ final class GhosttySurfaceScrollView: NSView {
     @discardableResult
     func debugSimulateFileDrop(paths: [String]) -> Bool {
         surfaceView.debugSimulateFileDrop(paths: paths)
+    }
+
+    func debugPendingSurfaceSize() -> CGSize? {
+        surfaceView.debugPendingSurfaceSize()
     }
 
     func debugRegisteredDropTypes() -> [String] {

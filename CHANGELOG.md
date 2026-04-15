@@ -4,16 +4,25 @@ All notable changes to cmux are documented here.
 
 ## [Unreleased]
 
+## [0.63.1-atlas.15] - 2026-04-15
+
 ### Added
+- Codex hook integration: session-start, prompt-submit, session-end, and stop lifecycle hooks with PID tracking and status indicators
+- Tmux workspace pane attention flash overlays for navigation and notification events
+- Exported screen path normalization and cleanup for terminal screenshot management
 - Atlas docs, doc map, and commit-oriented devlog workflow under `atlas-docs/`
-- Repo-managed git hooks plus helper scripts for forcing Atlas devlog updates and explicit canonical-doc review notes on each normal commit
+- Repo-managed git hooks for enforcing devlog updates on each commit
 
 ### Changed
-- `cmux welcome`, the public README, and the Atlas doc set now describe the current Atlas product story consistently
+- License synced from upstream: AGPL-3.0 → GPL-3.0 (dual-licensing with commercial option preserved)
+- Codex wrapper now only injects stock-compatible hooks (session_start, stop) by default; extended hooks (session_end, user_prompt_submit) require `CMUX_CODEX_EXTENDED_HOOKS=1` or an ovm dev build
+- File drop overlay installation deferred to avoid race with window content view setup
+- CI release and merge-validation workflows switched from self-hosted runner to GitHub-hosted macos-15
 
 ### Fixed
+- Prevent re-entrant `displayIfNeeded` crash during SwiftUI geometry change callbacks by deferring layout follow-up flush (cherry-picked from upstream manaflow-ai/cmux#2305)
 - Terminal local file links now respect the browser-toggle setting again
-- Wrapper/process docs now reflect the current Claude/Codex hook behavior, including Claude session-end hooks, custom Claude binary overrides, and Codex PATH-only real-binary resolution
+- Memory diagnostics command parsing consolidated to avoid argument handling drift
 
 ## [0.63.1-atlas.14] - 2026-04-14
 

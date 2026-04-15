@@ -107,7 +107,25 @@ For parallel/isolated builds (e.g., testing a feature alongside the main app), u
 
 This creates an isolated app with its own name, bundle ID, socket, and derived data path so it runs side-by-side with the main app. Important: use a non-`/tmp` derived data path if you need xcframework resolution (the script handles this automatically).
 
-Before launching a new tagged run, clean up any older tags you started in this session (quit old tagged app + remove its `/tmp` socket/derived data).
+Tagged-build cleanup is automatic. `reload.sh` keeps the current tag plus at most one other recent/running tag and deletes older tagged artifacts in the background to avoid DerivedData bloat. For manual cleanup:
+
+```bash
+./scripts/cleanup-tags.sh            # interactive: delete tagged runs
+./scripts/cleanup-tags.sh --dry-run  # preview only
+./scripts/cleanup-tags.sh --force    # delete without prompting
+```
+
+## Atlas docs and devlog
+
+- Atlas-specific product notes live under `atlas-docs/`.
+- Keep `atlas-docs/feature-inventory.md`, `README.md`, and `cmux welcome` aligned when the top-level Atlas story changes.
+- Every normal commit should add a short entry under `atlas-docs/devlog/`.
+- Install the repo-managed hooks once per clone with `./scripts/install-git-hooks.sh` (also run by `./scripts/setup.sh`).
+- Helper:
+
+```bash
+./scripts/atlas-devlog.sh add "Short summary of what this commit delivers" --docs "none needed" --docs "none needed"
+```
 
 ## Debug event log
 
@@ -180,12 +198,33 @@ This makes it visible in the GitHub PR UI (Commits tab, check statuses) that the
 
 ## Testing policy
 
-**Never run tests locally.** All tests (E2E, UI, python socket tests) run via GitHub Actions or on the VM.
+**Atlas tests are allowed locally. Other test suites should still run in GitHub Actions or on the VM.**
 
+- **Atlas tests (`scripts/test-atlas.sh`):** allowed locally.
+  - Shell + Swift Atlas tiers are safe to run locally.
+  - Atlas socket tests are allowed locally only against a tagged build/socket. Use `./scripts/reload.sh --tag <tag>` first, then run `./scripts/test-atlas.sh --tag <tag>` or set `CMUX_CLI_BIN`/`CMUX_SOCKET_PATH` explicitly as needed.
+  - Never use an untagged Debug app/socket for Atlas tests.
 - **E2E / UI tests:** trigger via `gh workflow run test-e2e.yml` (see cmuxterm-hq CLAUDE.md for details)
 - **Unit tests:** `xcodebuild -scheme cmux-unit` is safe (no app launch), but prefer CI
 - **Python socket tests (tests_v2/):** these connect to a running cmux instance's socket. Never launch an untagged `cmux DEV.app` to run them. If you must test locally, use a tagged build's socket (`/tmp/cmux-debug-<tag>.sock`) with `CMUX_SOCKET=/tmp/cmux-debug-<tag>.sock`
 - **Never `open` an untagged `cmux DEV.app`** from DerivedData. It conflicts with the user's running debug instance.
+
+## Atlas coverage practice
+
+- Treat Atlas coverage as **feature coverage**, not a single code coverage number. Atlas behavior spans shell wrappers, CLI/socket hooks, Swift runtime seams, and UI-only behavior that the Swift/Xcode coverage reporter does not measure together.
+- Keep the Atlas feature inventory and current coverage matrix in `docs/atlas-test-practice.md`.
+- For every Atlas-only change, decide which tier owns it:
+  - `shell` for wrapper/script behavior
+  - `socket` for CLI hook and control-path behavior
+  - `swift` for pure runtime logic that can be exercised without app launch
+  - `ui` or `non-atlas` when the behavior belongs in existing UI/unit suites instead of the dedicated Atlas harness
+- Do not merge Atlas-only behavior without either:
+  - a dedicated Atlas test, or
+  - an explicit entry in the matrix documenting why Atlas coverage is not practical and where the behavior is covered instead
+- Preferred local pre-merge check for Atlas work:
+  - `./scripts/test-atlas.sh --shell`
+  - `./scripts/reload.sh --tag <tag>`
+  - `./scripts/test-atlas.sh --tag <tag>`
 
 ## Ghostty submodule workflow
 

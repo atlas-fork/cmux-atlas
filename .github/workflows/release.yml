@@ -22,7 +22,7 @@ env:
 
 jobs:
   build-sign-notarize:
-    runs-on: [self-hosted, atlas-macos-arm64]
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - name: Checkout

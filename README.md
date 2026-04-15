@@ -107,6 +107,14 @@ The in-app browser has a scriptable API ported from [agent-browser](https://gith
 
 Everything is scriptable through the CLI and socket API — create workspaces/tabs, split panes, send keystrokes, open URLs in the browser.
 
+## Atlas-specific additions
+
+- **Agent launch + resume helpers** — launch Claude Code with `⌥⌘A` or Codex with `⌥⌘X`, and prefill supported resume commands when exit hooks indicate a resumable session
+- **Tracked workspace memory** — per-workspace RAM meter plus persistent memory diagnostics and CLI inspection commands
+- **Markdown workflows** — markdown/file links can render in a native panel instead of always leaving the terminal context
+- **Smarter local-file routing** — archives, disk images, binaries, media, and other non-renderable files reveal in Finder instead of opening in the embedded browser
+- **Repo-native Atlas workflow** — dedicated Atlas docs, feature-coverage tracking, and local Atlas regression tiers
+
 ## The Zen of cmux
 
 cmux is not prescriptive about how developers hold their tools. It's a terminal and browser with a CLI, and the rest is up to you.
@@ -148,6 +156,13 @@ For more info on how to configure cmux, [head over to our docs](https://cmux.com
 | ⌃ 1–8 | Jump to surface 1–8 |
 | ⌃ 9 | Jump to last surface |
 | ⌘ W | Close surface |
+
+### Agent Sessions
+
+| Shortcut | Action |
+|----------|--------|
+| ⌥ ⌘ A | New Claude Code surface |
+| ⌥ ⌘ X | New Codex surface |
 
 ### Split Panes
 

@@ -279,6 +279,86 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertTrue(path?.path.contains("com.example_unsafe_id") == true)
     }
 
+    func testRestoredTerminalActionRegistryFallsBackToCodexWorkingDirectoryWhenIdsDoNotMatch() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-codex-hook-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let stateURL = tempDir.appendingPathComponent("codex-hook-sessions.json", isDirectory: false)
+        try writeCodexHookState(
+            sessions: [
+                [
+                    "cwd": "/tmp/project",
+                    "sessionId": "codex-session-123",
+                    "source": "resume",
+                    "startedAt": 100,
+                    "surfaceId": UUID().uuidString,
+                    "updatedAt": 200,
+                    "workspaceId": UUID().uuidString,
+                ]
+            ],
+            to: stateURL
+        )
+
+        let action = RestoredTerminalActionRegistry.latestAction(
+            workspaceId: UUID(),
+            panelId: UUID(),
+            workingDirectory: "/tmp/project",
+            processEnv: ["CMUX_CODEX_HOOK_STATE_PATH": stateURL.path],
+            fileManager: .default
+        )
+
+        XCTAssertEqual(action?.agentType, .codex)
+        XCTAssertEqual(action?.sessionId, "codex-session-123")
+        XCTAssertEqual(action?.workingDirectory, "/tmp/project")
+    }
+
+    func testRestoredTerminalActionRegistryPrefersExactCodexPanelMatchOverWorkingDirectoryFallback() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-codex-hook-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let workspaceId = UUID()
+        let panelId = UUID()
+        let stateURL = tempDir.appendingPathComponent("codex-hook-sessions.json", isDirectory: false)
+        try writeCodexHookState(
+            sessions: [
+                [
+                    "cwd": "/tmp/project",
+                    "sessionId": "fallback-session",
+                    "source": "resume",
+                    "startedAt": 100,
+                    "surfaceId": UUID().uuidString,
+                    "updatedAt": 300,
+                    "workspaceId": UUID().uuidString,
+                ],
+                [
+                    "cwd": "/tmp/project",
+                    "sessionId": "exact-session",
+                    "source": "startup",
+                    "startedAt": 110,
+                    "surfaceId": panelId.uuidString,
+                    "updatedAt": 200,
+                    "workspaceId": workspaceId.uuidString,
+                ]
+            ],
+            to: stateURL
+        )
+
+        let action = RestoredTerminalActionRegistry.latestAction(
+            workspaceId: workspaceId,
+            panelId: panelId,
+            workingDirectory: "/tmp/project",
+            processEnv: ["CMUX_CODEX_HOOK_STATE_PATH": stateURL.path],
+            fileManager: .default
+        )
+
+        XCTAssertEqual(action?.agentType, .codex)
+        XCTAssertEqual(action?.sessionId, "exact-session")
+    }
+
     func testRestorePolicySkipsWhenLaunchHasExplicitArguments() {
         let shouldRestore = SessionRestorePolicy.shouldAttemptRestore(
             arguments: ["/Applications/cmux.app/Contents/MacOS/cmux", "--window", "window:1"],
@@ -552,6 +632,20 @@ final class SessionPersistenceTests: XCTestCase {
                 includeScrollback: false
             )
         )
+    }
+
+    private func writeCodexHookState(sessions: [[String: Any]], to url: URL) throws {
+        var mappedSessions: [String: [String: Any]] = [:]
+        for session in sessions {
+            guard let sessionId = session["sessionId"] as? String else { continue }
+            mappedSessions[sessionId] = session
+        }
+        let object: [String: Any] = [
+            "version": 1,
+            "sessions": mappedSessions
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try data.write(to: url, options: .atomic)
     }
 
     func testSessionAutosaveTickPolicySkipsWhenTerminating() {

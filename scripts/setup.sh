@@ -81,6 +81,9 @@ fi
 echo "==> Creating symlink for GhosttyKit.xcframework..."
 ln -sfn "$CACHE_XCFRAMEWORK" GhosttyKit.xcframework
 
+echo "==> Installing repo-managed git hooks..."
+"$SCRIPT_DIR/install-git-hooks.sh"
+
 echo "==> Setup complete!"
 echo ""
 echo "You can now build and run the app:"

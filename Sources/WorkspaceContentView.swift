@@ -87,6 +87,64 @@ func tmuxActivePaneOverlayRect(
     )
 }
 
+private extension PixelRect {
+    var cgRect: CGRect {
+        CGRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+struct TmuxWorkspacePaneOverlayRenderState: Equatable {
+    let workspaceId: UUID
+    let unreadRects: [CGRect]
+    let flashRect: CGRect?
+    let flashToken: UInt64
+    let flashReason: WorkspaceAttentionFlashReason?
+}
+
+@MainActor
+final class TmuxWorkspacePaneOverlayModel: ObservableObject {
+    @Published private(set) var unreadRects: [CGRect] = []
+    @Published private(set) var flashRect: CGRect?
+    @Published private(set) var flashStartedAt: Date?
+    @Published private(set) var flashReason: WorkspaceAttentionFlashReason?
+
+    private var lastWorkspaceId: UUID?
+    private var lastFlashToken: UInt64?
+
+    func apply(
+        _ state: TmuxWorkspacePaneOverlayRenderState,
+        now: () -> Date = Date.init
+    ) {
+        unreadRects = state.unreadRects
+        flashRect = state.flashRect
+        flashReason = state.flashReason
+
+        let didChangeWorkspace = lastWorkspaceId != state.workspaceId
+        if didChangeWorkspace {
+            lastWorkspaceId = state.workspaceId
+            lastFlashToken = state.flashToken
+            flashStartedAt = nil
+            return
+        }
+
+        if let lastFlashToken,
+           state.flashToken != lastFlashToken,
+           state.flashRect != nil {
+            flashStartedAt = now()
+        }
+        self.lastFlashToken = state.flashToken
+    }
+
+    func clear() {
+        unreadRects = []
+        flashRect = nil
+        flashStartedAt = nil
+        flashReason = nil
+        lastWorkspaceId = nil
+        lastFlashToken = nil
+    }
+}
+
 /// View that renders a Workspace's content using BonsplitView
 struct WorkspaceContentView: View {
     @ObservedObject var workspace: Workspace
@@ -287,6 +345,176 @@ struct WorkspaceContentView: View {
 
     private var splitZoomRenderIdentity: String {
         workspace.bonsplitController.zoomedPaneId.map { "zoom:\($0.id.uuidString)" } ?? "unzoomed"
+    }
+
+    private static let tmuxWorkspacePaneTopChromeHeight: CGFloat = 30
+
+    private enum TmuxWorkspacePaneOverlayTrimMode {
+        case workspaceLocal
+        case windowContent
+    }
+
+    private static func tmuxWorkspacePaneContentRect(
+        _ rect: CGRect,
+        trimMode: TmuxWorkspacePaneOverlayTrimMode
+    ) -> CGRect {
+        let topInset = min(tmuxWorkspacePaneTopChromeHeight, max(0, rect.height - 1))
+        switch trimMode {
+        case .workspaceLocal, .windowContent:
+            return CGRect(
+                x: rect.origin.x,
+                y: rect.origin.y + topInset,
+                width: rect.width,
+                height: max(0, rect.height - topInset)
+            )
+        }
+    }
+
+    private static func tmuxWorkspacePaneRect(
+        layoutSnapshot: LayoutSnapshot?,
+        paneId: PaneID?,
+        includeContainerOffset: Bool,
+        trimMode: TmuxWorkspacePaneOverlayTrimMode
+    ) -> CGRect? {
+        guard let layoutSnapshot,
+              let paneId,
+              let paneRect = layoutSnapshot.panes
+                .first(where: { $0.paneId == paneId.id.uuidString })?
+                .frame
+                .cgRect else {
+            return nil
+        }
+
+        let rect: CGRect
+        if includeContainerOffset {
+            rect = paneRect.offsetBy(
+                dx: 0,
+                dy: -CGFloat(layoutSnapshot.containerFrame.y)
+            )
+        } else {
+            rect = paneRect.offsetBy(
+                dx: -CGFloat(layoutSnapshot.containerFrame.x),
+                dy: -CGFloat(layoutSnapshot.containerFrame.y)
+            )
+        }
+        return tmuxWorkspacePaneContentRect(rect, trimMode: trimMode)
+    }
+
+    private static func tmuxWorkspacePaneRects(
+        workspace: Workspace,
+        notificationStore: TerminalNotificationStore,
+        layoutSnapshot: LayoutSnapshot?,
+        includeContainerOffset: Bool,
+        trimMode: TmuxWorkspacePaneOverlayTrimMode
+    ) -> [CGRect] {
+        guard let layoutSnapshot else { return [] }
+
+        return layoutSnapshot.panes.compactMap { pane in
+            guard let selectedTabId = pane.selectedTabId,
+                  let tabUUID = UUID(uuidString: selectedTabId),
+                  let panelId = workspace.panelIdFromSurfaceId(TabID(uuid: tabUUID)) else {
+                return nil
+            }
+
+            let shouldShowUnread = Workspace.shouldShowUnreadIndicator(
+                hasUnreadNotification: notificationStore.hasVisibleNotificationIndicator(
+                    forTabId: workspace.id,
+                    surfaceId: panelId
+                ),
+                isManuallyUnread: workspace.manualUnreadPanelIds.contains(panelId)
+            )
+            guard shouldShowUnread else { return nil }
+
+            let paneRect = pane.frame.cgRect
+            let rect: CGRect
+            if includeContainerOffset {
+                rect = paneRect.offsetBy(
+                    dx: 0,
+                    dy: -CGFloat(layoutSnapshot.containerFrame.y)
+                )
+            } else {
+                rect = paneRect.offsetBy(
+                    dx: -CGFloat(layoutSnapshot.containerFrame.x),
+                    dy: -CGFloat(layoutSnapshot.containerFrame.y)
+                )
+            }
+            return tmuxWorkspacePaneContentRect(rect, trimMode: trimMode)
+        }
+    }
+
+    static func tmuxWorkspacePaneOverlayRect(
+        layoutSnapshot: LayoutSnapshot?,
+        paneId: PaneID?
+    ) -> CGRect? {
+        tmuxWorkspacePaneRect(
+            layoutSnapshot: layoutSnapshot,
+            paneId: paneId,
+            includeContainerOffset: false,
+            trimMode: .workspaceLocal
+        )
+    }
+
+    static func tmuxWorkspacePaneWindowOverlayRect(
+        layoutSnapshot: LayoutSnapshot?,
+        paneId: PaneID?
+    ) -> CGRect? {
+        tmuxWorkspacePaneRect(
+            layoutSnapshot: layoutSnapshot,
+            paneId: paneId,
+            includeContainerOffset: true,
+            trimMode: .windowContent
+        )
+    }
+
+    static func effectiveTmuxLayoutSnapshot(
+        cachedSnapshot: LayoutSnapshot?,
+        liveSnapshot: LayoutSnapshot?
+    ) -> LayoutSnapshot? {
+        if let liveSnapshot,
+           tmuxLayoutSnapshotHasRenderableGeometry(liveSnapshot) {
+            return liveSnapshot
+        }
+        if let cachedSnapshot,
+           tmuxLayoutSnapshotHasRenderableGeometry(cachedSnapshot) {
+            return cachedSnapshot
+        }
+        return cachedSnapshot ?? liveSnapshot
+    }
+
+    static func tmuxWorkspacePaneUnreadRects(
+        workspace: Workspace,
+        notificationStore: TerminalNotificationStore,
+        layoutSnapshot: LayoutSnapshot?
+    ) -> [CGRect] {
+        tmuxWorkspacePaneRects(
+            workspace: workspace,
+            notificationStore: notificationStore,
+            layoutSnapshot: layoutSnapshot,
+            includeContainerOffset: false,
+            trimMode: .workspaceLocal
+        )
+    }
+
+    static func tmuxWorkspacePaneWindowUnreadRects(
+        workspace: Workspace,
+        notificationStore: TerminalNotificationStore,
+        layoutSnapshot: LayoutSnapshot?
+    ) -> [CGRect] {
+        tmuxWorkspacePaneRects(
+            workspace: workspace,
+            notificationStore: notificationStore,
+            layoutSnapshot: layoutSnapshot,
+            includeContainerOffset: true,
+            trimMode: .windowContent
+        )
+    }
+
+    private static func tmuxLayoutSnapshotHasRenderableGeometry(_ snapshot: LayoutSnapshot) -> Bool {
+        snapshot.containerFrame.width > 1 &&
+            snapshot.containerFrame.height > 1 &&
+            snapshot.panes.contains { pane in
+                pane.frame.width > 1 && pane.frame.height > 1
+            }
     }
 
     static func resolveGhosttyAppearanceConfig(

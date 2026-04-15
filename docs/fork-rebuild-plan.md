@@ -1,5 +1,15 @@
 # Atlas Fork Rebuild Plan
 
+Status note:
+
+- This is a historical planning document from the clean rebuild effort.
+- The rebuild work has already been carried forward into the current Atlas line.
+- For the current Atlas product surface and doc map, use:
+  - `atlas-docs/feature-inventory.md`
+  - `atlas-docs/architecture.md`
+  - `atlas-docs/doc-map.md`
+  - `docs/atlas-commit-classification.md`
+
 This document defines the strategy for rebuilding the Atlas fork on top of a fresh `upstream/main` base while keeping the current release line intact.
 
 Current state at the time this plan was written:

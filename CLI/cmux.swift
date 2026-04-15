@@ -1675,7 +1675,7 @@ struct CMUXCLI {
         if command == "codex" {
             let sub = commandArgs.first?.lowercased() ?? "help"
             if sub == "install-hooks" {
-                try runCodexInstallHooks()
+                try runCodexInstallHooks(commandArgs: Array(commandArgs.dropFirst()))
                 return
             } else if sub == "uninstall-hooks" {
                 try runCodexUninstallHooks()
@@ -7391,6 +7391,8 @@ struct CMUXCLI {
 
             Subcommands:
               install-hooks     Install cmux hooks into ~/.codex/hooks.json
+                                Flags: [--extended] [--yes]
+                                Extended hooks are only for compatible Codex dev builds.
               uninstall-hooks   Remove cmux hooks from ~/.codex/hooks.json
             """
         case "codex-hook":
@@ -7401,9 +7403,10 @@ struct CMUXCLI {
             Gracefully no-ops when not running inside cmux.
 
             Subcommands:
-              session-start   Register a Codex session
+              session-start   Register a Codex session and track its PID
               prompt-submit   Set Running status on user prompt
-              stop            Send completion notification, set Idle
+              stop            Set Idle status after a completed turn
+              session-end     Clear Codex status and optionally prefill resume
 
             Flags:
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID)
@@ -11636,6 +11639,15 @@ struct CMUXCLI {
                 workspaceId: workspaceId,
                 client: client
             )
+            let codexPID: Int? = {
+                guard let raw = ProcessInfo.processInfo.environment["CMUX_CODEX_PID"]?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                    let pid = Int(raw),
+                    pid > 0 else {
+                    return nil
+                }
+                return pid
+            }()
             try? sessionStore.upsert(
                 sessionId: sessionId,
                 workspaceId: workspaceId,
@@ -11644,6 +11656,29 @@ struct CMUXCLI {
                 transcriptPath: parsedInput.transcriptPath,
                 permissionMode: parsedInput.permissionMode,
                 source: parsedInput.source
+            )
+            if let codexPID {
+                _ = try? sendV1Command(
+                    "set_agent_pid codex \(codexPID) --tab=\(workspaceId)",
+                    client: client
+                )
+            }
+            print("{\"continue\":true}")
+
+        case "prompt-submit":
+            telemetry.breadcrumb("codex-hook.prompt-submit")
+            var workspaceId = fallbackWorkspaceId
+            if let sessionId = parsedInput.sessionId,
+               let mapped = try? sessionStore.lookup(sessionId: sessionId),
+               let mappedWorkspace = try? resolveWorkspaceIdForAgentHook(mapped.workspaceId, client: client) {
+                workspaceId = mappedWorkspace
+            }
+            try? setCodexStatus(
+                client: client,
+                workspaceId: workspaceId,
+                value: "Running",
+                icon: "bolt.fill",
+                color: "#4C8DFF"
             )
             print("{\"continue\":true}")
 
@@ -11669,6 +11704,13 @@ struct CMUXCLI {
                 permissionMode: parsedInput.permissionMode ?? existingRecord?.permissionMode,
                 source: parsedInput.source ?? existingRecord?.source
             )
+            try? setCodexStatus(
+                client: client,
+                workspaceId: workspaceId,
+                value: "Idle",
+                icon: "pause.circle.fill",
+                color: "#8E8E93"
+            )
             print("{\"continue\":true}")
 
         case "session-end":
@@ -11693,6 +11735,8 @@ struct CMUXCLI {
                 permissionMode: parsedInput.permissionMode ?? existingRecord?.permissionMode,
                 source: parsedInput.source ?? existingRecord?.source
             )
+            _ = try? clearCodexStatus(client: client, workspaceId: workspaceId)
+            _ = try? sendV1Command("clear_agent_pid codex --tab=\(workspaceId)", client: client)
             if UserDefaults.standard.object(forKey: "agentAutoResumeOnExit") == nil || UserDefaults.standard.bool(forKey: "agentAutoResumeOnExit") {
                 var sendParams: [String: Any] = [
                     "text": codexResumeCommand(sessionId: sessionId),
@@ -11709,7 +11753,7 @@ struct CMUXCLI {
             telemetry.breadcrumb("codex-hook.help")
             print(
                 """
-                cmux codex-hook <session-start|session-end|stop> [--workspace <id|index>] [--surface <id|index>]
+                cmux codex-hook <session-start|session-end|prompt-submit|stop> [--workspace <id|index>] [--surface <id|index>]
                 """
             )
 
@@ -11735,6 +11779,22 @@ struct CMUXCLI {
 
     private func clearClaudeStatus(client: SocketClient, workspaceId: String) throws {
         _ = try client.send(command: "clear_status claude_code --tab=\(workspaceId)")
+    }
+
+    private func setCodexStatus(
+        client: SocketClient,
+        workspaceId: String,
+        value: String,
+        icon: String,
+        color: String
+    ) throws {
+        _ = try client.send(
+            command: "set_status codex \(value) --icon=\(icon) --color=\(color) --tab=\(workspaceId)"
+        )
+    }
+
+    private func clearCodexStatus(client: SocketClient, workspaceId: String) throws {
+        _ = try client.send(command: "clear_status codex --tab=\(workspaceId)")
     }
 
     private func describeAskUserQuestion(_ object: [String: Any]?) -> String? {
@@ -12136,45 +12196,61 @@ struct CMUXCLI {
         "[ -n \"$CMUX_SURFACE_ID\" ] && command -v cmux >/dev/null 2>&1 && cmux codex-hook \(event) || echo '{}'"
     }
 
-    private static let codexHooksJSON: [String: Any] = [
-        "hooks": [
-            "SessionStart": [[
-                "hooks": [[
-                    "type": "command",
-                    "command": codexHookCommand("session-start"),
-                    "timeout": 10
-                ] as [String: Any]]
-            ] as [String: Any]],
-            "UserPromptSubmit": [[
-                "hooks": [[
-                    "type": "command",
-                    "command": codexHookCommand("prompt-submit"),
-                    "timeout": 10
-                ] as [String: Any]]
-            ] as [String: Any]],
-            "SessionEnd": [[
-                "hooks": [[
-                    "type": "command",
-                    "command": codexHookCommand("session-end"),
-                    "timeout": 10
-                ] as [String: Any]]
-            ] as [String: Any]],
-            "Stop": [[
-                "hooks": [[
-                    "type": "command",
-                    "command": codexHookCommand("stop"),
-                    "timeout": 10
-                ] as [String: Any]]
+    private struct CodexInstallHooksOptions {
+        let includeExtendedHooks: Bool
+        let skipConfirm: Bool
+    }
+
+    private static func codexHookGroups(_ event: String) -> [[String: Any]] {
+        [[
+            "hooks": [[
+                "type": "command",
+                "command": codexHookCommand(event),
+                "timeout": 10
             ] as [String: Any]]
-        ] as [String: Any]
-    ]
+        ] as [String: Any]]
+    }
+
+    private static func codexHooksJSON(includeExtendedHooks: Bool) -> [String: Any] {
+        var hooks: [String: Any] = [
+            "SessionStart": codexHookGroups("session-start"),
+            "Stop": codexHookGroups("stop")
+        ]
+        if includeExtendedHooks {
+            hooks["UserPromptSubmit"] = codexHookGroups("prompt-submit")
+            hooks["SessionEnd"] = codexHookGroups("session-end")
+        }
+        return ["hooks": hooks]
+    }
 
     /// Identifier used to detect cmux-owned hooks during uninstall.
     private static let codexHookCommandMarker = "cmux codex-hook"
 
-    private func runCodexInstallHooks() throws {
-        let skipConfirm = ProcessInfo.processInfo.arguments.contains("--yes")
-            || ProcessInfo.processInfo.arguments.contains("-y")
+    private func parseCodexInstallHooksOptions(_ commandArgs: [String]) throws -> CodexInstallHooksOptions {
+        var includeExtendedHooks = false
+        var skipConfirm = false
+
+        for arg in commandArgs {
+            switch arg {
+            case "--extended":
+                includeExtendedHooks = true
+            case "--yes", "-y":
+                skipConfirm = true
+            default:
+                throw CLIError(
+                    message: "codex install-hooks: unknown flag '\(arg)'. Usage: cmux codex install-hooks [--extended] [--yes]"
+                )
+            }
+        }
+
+        return CodexInstallHooksOptions(
+            includeExtendedHooks: includeExtendedHooks,
+            skipConfirm: skipConfirm
+        )
+    }
+
+    private func runCodexInstallHooks(commandArgs: [String]) throws {
+        let options = try parseCodexInstallHooksOptions(commandArgs)
         let codexHome = ProcessInfo.processInfo.environment["CODEX_HOME"]
             ?? NSString(string: "~/.codex").expandingTildeInPath
         let hooksPath = (codexHome as NSString).appendingPathComponent("hooks.json")
@@ -12198,7 +12274,7 @@ struct CMUXCLI {
         }
 
         var hooks = existing["hooks"] as? [String: Any] ?? [:]
-        let cmuxHooks = Self.codexHooksJSON["hooks"] as! [String: Any]
+        let cmuxHooks = Self.codexHooksJSON(includeExtendedHooks: options.includeExtendedHooks)["hooks"] as! [String: Any]
         for (eventName, cmuxGroups) in cmuxHooks {
             guard let cmuxGroupArray = cmuxGroups as? [[String: Any]] else { continue }
             var eventGroups = hooks[eventName] as? [[String: Any]] ?? []
@@ -12261,7 +12337,7 @@ struct CMUXCLI {
             print("")
         }
 
-        if !skipConfirm {
+        if !options.skipConfirm {
             print("Apply these changes? [Y/n] ", terminator: "")
             if let response = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
                !response.isEmpty && response != "y" && response != "yes" {
@@ -12279,7 +12355,13 @@ struct CMUXCLI {
         }
 
         print("")
-        print("Installed. Hooks activate inside cmux and silently no-op elsewhere.")
+        if options.includeExtendedHooks {
+            print("Installed. Extended hooks activate inside cmux and silently no-op elsewhere.")
+            print("Use this mode only with cmux-compatible Codex dev builds, such as ovm-managed dev installs.")
+        } else {
+            print("Installed. Standard hooks activate inside cmux and silently no-op elsewhere.")
+            print("Use `cmux codex install-hooks --extended` only when your Codex build supports prompt-submit and session-end events.")
+        }
         print("To remove: cmux codex uninstall-hooks")
     }
 
@@ -12577,6 +12659,8 @@ struct CMUXCLI {
 
           \(bold)\u{2318}N\(reset)\(subdued)                  New workspace\(reset)
           \(bold)\u{2318}T\(reset)\(subdued)                  New tab\(reset)
+          \(bold)\u{2325}\u{2318}A\(reset)\(subdued)                 New Claude Code surface\(reset)
+          \(bold)\u{2325}\u{2318}X\(reset)\(subdued)                 New Codex surface\(reset)
           \(bold)\u{2318}P\(reset)\(subdued)                  Go to workspace\(reset)
           \(bold)\u{2318}D\(reset)\(subdued)                  Split right\(reset)
           \(bold)\u{2318}\u{21E7}D\(reset)\(subdued)                 Split down\(reset)
@@ -12589,15 +12673,16 @@ struct CMUXCLI {
         let atlasFeatures = """
           \(bold)Atlas Additions\(reset)
 
-          \(subdued)•\(reset) \(subdued)AI session auto-resume — detect and restore Claude/Codex sessions on restart\(reset)
-          \(subdued)•\(reset) \(subdued)Editor sync — auto-open workspace dir in VS Code, Cursor, Zed, etc.\(reset)
-          \(subdued)•\(reset) \(subdued)Markdown link interception — render md files in a native panel\(reset)
-          \(subdued)•\(reset) \(subdued)AI quick launch buttons — one-click Claude/Codex from the titlebar\(reset)
+          \(subdued)•\(reset) \(subdued)Agent quick launch — start Claude Code or Codex from the titlebar or File menu\(reset)
+          \(subdued)•\(reset) \(subdued)Auto-resume helpers — prefill supported resume commands when tracked agent sessions end\(reset)
+          \(subdued)•\(reset) \(subdued)Editor sync — auto-open workspace dirs in VS Code, Cursor, Zed, and similar editors\(reset)
+          \(subdued)•\(reset) \(subdued)Tracked workspace memory — see RAM by project and inspect incidents from the CLI\(reset)
+          \(subdued)•\(reset) \(subdued)Markdown workflows — render markdown/file links in a native panel when appropriate\(reset)
+          \(subdued)•\(reset) \(subdued)Local-file routing — reveal non-renderable files in Finder instead of forcing them into the browser\(reset)
           \(subdued)•\(reset) \(subdued)Crash autosave — preserve TUI scrollback on unexpected exits\(reset)
-          \(subdued)•\(reset) \(subdued)Per-workspace memory usage — see RAM by project in the sidebar\(reset)
-          \(subdued)•\(reset) \(subdued)Reveal in Finder — right-click any tab to open its working directory\(reset)
+          \(subdued)•\(reset) \(subdued)Atlas docs + tests — dedicated feature inventory, devlog, and Atlas regression tiers\(reset)
 
-          \(bold)Fork\(reset)\(subdued)                https://github.com/atlascodesai/cmux-atlas\(reset)
+          \(bold)Fork\(reset)\(subdued)                https://github.com/atlas-fork/cmux-atlas\(reset)
         """
 
         print()
@@ -12969,7 +13054,7 @@ struct CMUXCLI {
           memory-metrickit [--limit <n>]
           memory-dump [--reason <text>]
           claude-hook <session-start|stop|notification> [--workspace <id|ref>] [--surface <id|ref>]
-          codex-hook <session-start|session-end|stop> [--workspace <id|ref>] [--surface <id|ref>]
+          codex-hook <session-start|session-end|prompt-submit|stop> [--workspace <id|ref>] [--surface <id|ref>]
           set-app-focus <active|inactive|clear>
           simulate-app-active
 

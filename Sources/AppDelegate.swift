@@ -1179,6 +1179,10 @@ enum WorkspaceShortcutMapper {
         return index < workspaceCount ? index : nil
     }
 
+    static func workspaceIndex(forDigit digit: Int, workspaceCount: Int) -> Int? {
+        workspaceIndex(forCommandDigit: digit, workspaceCount: workspaceCount)
+    }
+
     /// Returns the primary Cmd+digit badge to display for a workspace row.
     /// Picks the lowest digit that maps to that row index.
     static func commandDigitForWorkspace(at index: Int, workspaceCount: Int) -> Int? {
@@ -1189,6 +1193,10 @@ enum WorkspaceShortcutMapper {
             }
         }
         return nil
+    }
+
+    static func digitForWorkspace(at index: Int, workspaceCount: Int) -> Int? {
+        commandDigitForWorkspace(at: index, workspaceCount: workspaceCount)
     }
 }
 

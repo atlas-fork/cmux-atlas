@@ -134,18 +134,87 @@ class TestCodexWrapper(unittest.TestCase):
         self.assertEqual(rc, 0, f"Wrapper failed: {stderr}")
 
     def test_injects_hooks_in_cmux(self):
-        """Inside cmux with live socket, wrapper injects codex hook flags."""
+        """Inside cmux with live socket, wrapper injects standard codex hook flags."""
         rc, args, _, stderr = run_wrapper(socket_state="live", argv=["prompt"])
         self.assertEqual(rc, 0, f"Wrapper failed: {stderr}")
         self.assertIn("--enable", args)
         self.assertIn("codex_hooks", args)
         self.assertIn("--hook", args)
-        # Check hook commands are present
         hook_values = [args[i + 1] for i, a in enumerate(args) if a == "--hook" and i + 1 < len(args)]
         session_start_hooks = [h for h in hook_values if "session-start" in h]
         stop_hooks = [h for h in hook_values if "stop" in h]
         self.assertTrue(len(session_start_hooks) > 0, "Missing session-start hook")
         self.assertTrue(len(stop_hooks) > 0, "Missing stop hook")
+        # Extended hooks should NOT be present without an explicit capability signal.
+        prompt_submit_hooks = [h for h in hook_values if "prompt-submit" in h]
+        session_end_hooks = [h for h in hook_values if "session-end" in h]
+        self.assertEqual(len(prompt_submit_hooks), 0, "prompt-submit hook should not be injected without a dev-build signal")
+        self.assertEqual(len(session_end_hooks), 0, "session-end hook should not be injected without a dev-build signal")
+
+    def test_injects_extended_hooks_with_env_var(self):
+        """CMUX_CODEX_EXTENDED_HOOKS=1 enables session-end and prompt-submit hooks."""
+        rc, args, _, stderr = run_wrapper(
+            socket_state="live",
+            argv=["prompt"],
+            env_overrides={"CMUX_CODEX_EXTENDED_HOOKS": "1"},
+        )
+        self.assertEqual(rc, 0, f"Wrapper failed: {stderr}")
+        hook_values = [args[i + 1] for i, a in enumerate(args) if a == "--hook" and i + 1 < len(args)]
+        session_start_hooks = [h for h in hook_values if "session-start" in h]
+        prompt_submit_hooks = [h for h in hook_values if "prompt-submit" in h]
+        session_end_hooks = [h for h in hook_values if "session-end" in h]
+        stop_hooks = [h for h in hook_values if "stop" in h]
+        self.assertTrue(len(session_start_hooks) > 0, "Missing session-start hook")
+        self.assertTrue(len(prompt_submit_hooks) > 0, "Missing prompt-submit hook")
+        self.assertTrue(len(session_end_hooks) > 0, "Missing session-end hook")
+        self.assertTrue(len(stop_hooks) > 0, "Missing stop hook")
+
+    def test_injects_extended_hooks_for_ovm_codex_dev_builds(self):
+        """ovm Codex dev-build env enables extended hooks without the cmux-specific override."""
+        rc, args, _, stderr = run_wrapper(
+            socket_state="live",
+            argv=["prompt"],
+            env_overrides={
+                "OVM_PRODUCT": "codex",
+                "OVM_DEV_BUILD": "1",
+                "OVM_VERSION": "dev:resume-fix",
+            },
+        )
+        self.assertEqual(rc, 0, f"Wrapper failed: {stderr}")
+        hook_values = [args[i + 1] for i, a in enumerate(args) if a == "--hook" and i + 1 < len(args)]
+        self.assertTrue(any("prompt-submit" in hook for hook in hook_values), "Missing prompt-submit hook")
+        self.assertTrue(any("session-end" in hook for hook in hook_values), "Missing session-end hook")
+
+    def test_injects_extended_hooks_for_ovm_codex_dev_version(self):
+        """ovm Codex dev-version env enables extended hooks even without OVM_DEV_BUILD."""
+        rc, args, _, stderr = run_wrapper(
+            socket_state="live",
+            argv=["prompt"],
+            env_overrides={
+                "OVM_PRODUCT": "codex",
+                "OVM_VERSION": "dev:resume-fix",
+            },
+        )
+        self.assertEqual(rc, 0, f"Wrapper failed: {stderr}")
+        hook_values = [args[i + 1] for i, a in enumerate(args) if a == "--hook" and i + 1 < len(args)]
+        self.assertTrue(any("prompt-submit" in hook for hook in hook_values), "Missing prompt-submit hook")
+        self.assertTrue(any("session-end" in hook for hook in hook_values), "Missing session-end hook")
+
+    def test_does_not_enable_extended_hooks_for_other_ovm_products(self):
+        """ovm env alone should not enable Codex-only hooks for non-Codex products."""
+        rc, args, _, stderr = run_wrapper(
+            socket_state="live",
+            argv=["prompt"],
+            env_overrides={
+                "OVM_PRODUCT": "claude",
+                "OVM_DEV_BUILD": "1",
+                "OVM_VERSION": "dev:feature-x",
+            },
+        )
+        self.assertEqual(rc, 0, f"Wrapper failed: {stderr}")
+        hook_values = [args[i + 1] for i, a in enumerate(args) if a == "--hook" and i + 1 < len(args)]
+        self.assertFalse(any("prompt-submit" in hook for hook in hook_values), "prompt-submit hook should stay disabled")
+        self.assertFalse(any("session-end" in hook for hook in hook_values), "session-end hook should stay disabled")
 
     def test_passthrough_outside_cmux(self):
         """Without CMUX_SURFACE_ID, wrapper passes args unchanged to real codex."""
@@ -224,6 +293,75 @@ exit 0
             pid_value = env_log.read_text().strip()
             self.assertNotEqual(pid_value, "__UNSET__", "CMUX_CODEX_PID was not exported")
             self.assertTrue(pid_value.isdigit(), f"CMUX_CODEX_PID is not a number: {pid_value}")
+
+    def test_ignores_removed_real_bin_override_env(self):
+        """CMUX_CODEX_REAL_BIN no longer overrides PATH resolution."""
+        with tempfile.TemporaryDirectory(prefix="cmux-codex-wrapper-test-") as td:
+            tmp = Path(td)
+            wrapper_dir = tmp / "wrapper-bin"
+            real_dir = tmp / "real-bin"
+            override_dir = tmp / "override-bin"
+            wrapper_dir.mkdir(parents=True, exist_ok=True)
+            real_dir.mkdir(parents=True, exist_ok=True)
+            override_dir.mkdir(parents=True, exist_ok=True)
+
+            wrapper = wrapper_dir / "codex"
+            shutil.copy2(SOURCE_WRAPPER, wrapper)
+            wrapper.chmod(0o755)
+
+            path_log = tmp / "path-real.log"
+            override_log = tmp / "override-real.log"
+            make_executable(
+                real_dir / "codex",
+                f"""#!/usr/bin/env bash
+set -euo pipefail
+printf 'path\\n' > "{path_log}"
+""",
+            )
+            override_real = override_dir / "codex-override"
+            make_executable(
+                override_real,
+                f"""#!/usr/bin/env bash
+set -euo pipefail
+printf 'override\\n' > "{override_log}"
+""",
+            )
+            make_executable(
+                wrapper_dir / "cmux",
+                """#!/usr/bin/env bash
+[[ "${1:-}" == "--socket" ]] && shift 2
+[[ "${1:-}" == "ping" ]] && exit 0
+exit 0
+""",
+            )
+
+            socket_path = str(tmp / "cmux.sock")
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.bind(socket_path)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{wrapper_dir}:{real_dir}:/usr/bin:/bin"
+            env["CMUX_SURFACE_ID"] = "surface:test"
+            env["CMUX_SOCKET_PATH"] = socket_path
+            env["CMUX_CODEX_REAL_BIN"] = str(override_real)
+            try:
+                proc = subprocess.run(
+                    ["codex", "prompt"],
+                    cwd=tmp,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            finally:
+                sock.close()
+
+            self.assertEqual(proc.returncode, 0, f"Wrapper failed: {proc.stderr}")
+            self.assertEqual(path_log.read_text(encoding="utf-8").strip(), "path")
+            self.assertFalse(
+                override_log.exists(),
+                "CMUX_CODEX_REAL_BIN should be ignored in favor of PATH resolution",
+            )
 
 
 if __name__ == "__main__":

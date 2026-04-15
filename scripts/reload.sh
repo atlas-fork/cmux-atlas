@@ -306,6 +306,14 @@ if [[ -n "$TAG" ]]; then
   fi
 fi
 
+# Auto-clean old/excess tagged runs in the background. Keep the current tag
+# plus at most one other recent/running tag to prevent DerivedData bloat.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ -x "$SCRIPT_DIR/cleanup-tags.sh" ]]; then
+  CMUX_CLEANUP_MODE=auto CMUX_CLEANUP_CURRENT_TAG="$TAG_SLUG" \
+    "$SCRIPT_DIR/cleanup-tags.sh" --force >/dev/null 2>&1 &
+fi
+
 XCODEBUILD_ARGS=(
   -project GhosttyTabs.xcodeproj
   -scheme cmux

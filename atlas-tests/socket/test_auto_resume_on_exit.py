@@ -85,6 +85,34 @@ class TestAutoResumeOnExit(unittest.TestCase):
             check=False,
         )
 
+    def _run_codex_hook(
+        self,
+        socket_path: str,
+        state_path: str,
+        state: FakeHookServerState,
+        subcommand: str,
+        payload: dict,
+        extra_env: dict | None = None
+    ):
+        env = os.environ.copy()
+        env["CMUX_SOCKET_PATH"] = socket_path
+        env["CMUX_WORKSPACE_ID"] = WORKSPACE_ID
+        env["CMUX_SURFACE_ID"] = SURFACE_ID
+        env["CMUX_CODEX_HOOK_STATE_PATH"] = state_path
+        env["CMUX_CLI_SENTRY_DISABLED"] = "1"
+        if extra_env:
+            env.update(extra_env)
+
+        return subprocess.run(
+            [self.cli, "--socket", socket_path, "codex-hook", subcommand],
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+            env=env,
+            timeout=10,
+            check=False,
+        )
+
     def test_session_end_prefills_resume_on_normal_exit(self):
         """Normal session-end (no reason field) prefills the resume command."""
         with tempfile.TemporaryDirectory(prefix="atlas-resume-test-") as td:
@@ -151,6 +179,84 @@ class TestAutoResumeOnExit(unittest.TestCase):
                 self.assertEqual(
                     len(resume_calls), 0,
                     f"Resume should NOT be sent for reason=clear, got: {resume_calls}"
+                )
+            finally:
+                server.shutdown()
+
+    def test_codex_session_end_prefills_resume_on_normal_exit(self):
+        """Codex session-end prefills `codex resume <id>` into the mapped surface."""
+        with tempfile.TemporaryDirectory(prefix="atlas-resume-test-") as td:
+            socket_path = os.path.join(td, "cmux.sock")
+            state_path = os.path.join(td, "codex-hook-sessions.json")
+            state = FakeHookServerState(workspace_id=WORKSPACE_ID, surface_id=SURFACE_ID)
+
+            server = FakeHookUnixServer(socket_path, state)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+
+            try:
+                session_id = "test-codex-resume-789"
+
+                proc = self._run_codex_hook(socket_path, state_path, state, "session-start", {"session_id": session_id})
+                self.assertEqual(proc.returncode, 0, f"codex session-start failed: {proc.stderr}")
+                self.assertIn('"continue":true', proc.stdout)
+
+                proc = self._run_codex_hook(socket_path, state_path, state, "session-end", {"session_id": session_id})
+                self.assertEqual(proc.returncode, 0, f"codex session-end failed: {proc.stderr}")
+                self.assertIn('"continue":true', proc.stdout)
+
+                with state.lock:
+                    resume_calls = [
+                        r for r in state.v2_requests
+                        if r.get("method") == "surface.send_text"
+                        and r.get("params", {}).get("text") == f"codex resume {session_id}"
+                    ]
+                self.assertTrue(
+                    len(resume_calls) > 0,
+                    f"Expected surface.send_text with codex resume command, got: {state.v2_requests}"
+                )
+                params = resume_calls[-1]["params"]
+                self.assertEqual(params.get("workspace_id"), WORKSPACE_ID)
+                self.assertEqual(params.get("surface_id"), SURFACE_ID)
+            finally:
+                server.shutdown()
+
+
+    def test_codex_prompt_submit_sets_running_status_and_stop_sets_idle(self):
+        """Codex prompt-submit/stop should drive visible workspace status updates."""
+        with tempfile.TemporaryDirectory(prefix="atlas-resume-test-") as td:
+            socket_path = os.path.join(td, "cmux.sock")
+            state_path = os.path.join(td, "codex-hook-sessions.json")
+            state = FakeHookServerState(workspace_id=WORKSPACE_ID, surface_id=SURFACE_ID)
+
+            server = FakeHookUnixServer(socket_path, state)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+
+            try:
+                session_id = "test-codex-status-123"
+
+                proc = self._run_codex_hook(socket_path, state_path, state, "session-start", {"session_id": session_id})
+                self.assertEqual(proc.returncode, 0, f"codex session-start failed: {proc.stderr}")
+
+                proc = self._run_codex_hook(socket_path, state_path, state, "prompt-submit", {"session_id": session_id})
+                self.assertEqual(proc.returncode, 0, f"codex prompt-submit failed: {proc.stderr}")
+                self.assertIn('"continue":true', proc.stdout)
+
+                proc = self._run_codex_hook(socket_path, state_path, state, "stop", {"session_id": session_id})
+                self.assertEqual(proc.returncode, 0, f"codex stop failed: {proc.stderr}")
+                self.assertIn('"continue":true', proc.stdout)
+
+                with state.lock:
+                    commands = list(state.v1_commands)
+
+                self.assertTrue(
+                    any("set_status codex Running" in command for command in commands),
+                    f"Expected Running status update, got: {commands}"
+                )
+                self.assertTrue(
+                    any("set_status codex Idle" in command for command in commands),
+                    f"Expected Idle status update, got: {commands}"
                 )
             finally:
                 server.shutdown()

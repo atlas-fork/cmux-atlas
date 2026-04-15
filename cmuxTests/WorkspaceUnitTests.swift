@@ -296,29 +296,19 @@ final class WorkspacePlacementSettingsTests: XCTestCase {
 final class WorkspaceCreationPlacementTests: XCTestCase {
     private final class SnapshotMutatingTabManager: TabManager {
         var afterCaptureWorkspaceCreationSnapshot: (() -> Void)?
-        var beforeCreateWorkspace: (() -> Void)?
-
-        override func didCaptureWorkspaceCreationSnapshot() {
-            afterCaptureWorkspaceCreationSnapshot?()
+        var beforeCreateWorkspace: (() -> Void)? {
+            didSet {
+                debugBeforeCreateWorkspaceForTests = { [weak self] _ in
+                    self?.beforeCreateWorkspace?()
+                }
+            }
         }
 
-        override func makeWorkspaceForCreation(
-            title: String,
-            workingDirectory: String?,
-            portOrdinal: Int,
-            configTemplate: CmuxSurfaceConfigTemplate?,
-            initialTerminalCommand: String?,
-            initialTerminalEnvironment: [String: String]
-        ) -> Workspace {
-            beforeCreateWorkspace?()
-            return super.makeWorkspaceForCreation(
-                title: title,
-                workingDirectory: workingDirectory,
-                portOrdinal: portOrdinal,
-                configTemplate: configTemplate,
-                initialTerminalCommand: initialTerminalCommand,
-                initialTerminalEnvironment: initialTerminalEnvironment
-            )
+        override init(initialWorkingDirectory: String? = nil) {
+            super.init(initialWorkingDirectory: initialWorkingDirectory)
+            debugAfterCaptureWorkspaceCreationSnapshotForTests = { [weak self] in
+                self?.afterCaptureWorkspaceCreationSnapshot?()
+            }
         }
     }
 
@@ -561,23 +551,11 @@ final class WorkspaceCreationConfigSanitizationTests: XCTestCase {
             injectedConfig ?? super.inheritedTerminalConfigForNewWorkspace(workspace: workspace)
         }
 
-        override func makeWorkspaceForCreation(
-            title: String,
-            workingDirectory: String?,
-            portOrdinal: Int,
-            configTemplate: CmuxSurfaceConfigTemplate?,
-            initialTerminalCommand: String?,
-            initialTerminalEnvironment: [String: String]
-        ) -> Workspace {
-            capturedConfigTemplate = configTemplate
-            return super.makeWorkspaceForCreation(
-                title: title,
-                workingDirectory: workingDirectory,
-                portOrdinal: portOrdinal,
-                configTemplate: configTemplate,
-                initialTerminalCommand: initialTerminalCommand,
-                initialTerminalEnvironment: initialTerminalEnvironment
-            )
+        override init(initialWorkingDirectory: String? = nil) {
+            super.init(initialWorkingDirectory: initialWorkingDirectory)
+            debugBeforeCreateWorkspaceForTests = { [weak self] configTemplate in
+                self?.capturedConfigTemplate = configTemplate
+            }
         }
     }
 

@@ -1498,28 +1498,34 @@ enum MountedWorkspacePresentationPolicy {
 
 /// Installs a FileDropOverlayView on the window's theme frame for Finder file drag support.
 func installFileDropOverlay(on window: NSWindow, tabManager: TabManager) {
-    guard objc_getAssociatedObject(window, &fileDropOverlayKey) == nil,
-          let contentView = window.contentView,
-          let themeFrame = contentView.superview else { return }
+    guard objc_getAssociatedObject(window, &fileDropOverlayKey) == nil else { return }
 
-    let overlay = FileDropOverlayView(frame: contentView.frame)
-    overlay.translatesAutoresizingMaskIntoConstraints = false
-    overlay.onDrop = { [weak tabManager] urls in
-        MainActor.assumeIsolated {
-            guard let tabManager, let terminal = tabManager.selectedWorkspace?.focusedTerminalPanel else { return false }
-            return terminal.hostedView.handleDroppedURLs(urls)
+    DispatchQueue.main.async {
+        guard objc_getAssociatedObject(window, &fileDropOverlayKey) == nil,
+              let contentView = window.contentView,
+              let themeFrame = contentView.superview else { return }
+
+        let overlay = FileDropOverlayView(frame: contentView.frame)
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        overlay.onDrop = { [weak tabManager] urls in
+            MainActor.assumeIsolated {
+                guard let tabManager, let terminal = tabManager.selectedWorkspace?.focusedTerminalPanel else { return false }
+                return terminal.hostedView.handleDroppedURLs(urls)
+            }
         }
+        // WindowAccessor can fire while SwiftUI is still mounting the window hierarchy.
+        // Installing the overlay on the next turn avoids mutating NSThemeFrame during
+        // an active layout pass, which can recurse and crash the unit-test host app.
+        themeFrame.addSubview(overlay, positioned: .above, relativeTo: contentView)
+        NSLayoutConstraint.activate([
+            overlay.topAnchor.constraint(equalTo: contentView.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            overlay.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: contentView.trailingAnchor)
+        ])
+
+        objc_setAssociatedObject(window, &fileDropOverlayKey, overlay, .OBJC_ASSOCIATION_RETAIN)
     }
-
-    themeFrame.addSubview(overlay, positioned: .above, relativeTo: contentView)
-    NSLayoutConstraint.activate([
-        overlay.topAnchor.constraint(equalTo: contentView.topAnchor),
-        overlay.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-        overlay.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-        overlay.trailingAnchor.constraint(equalTo: contentView.trailingAnchor)
-    ])
-
-    objc_setAssociatedObject(window, &fileDropOverlayKey, overlay, .OBJC_ASSOCIATION_RETAIN)
 }
 
 struct ContentView: View {
@@ -1711,6 +1717,40 @@ struct ContentView: View {
     private struct CommandPaletteUsageEntry: Codable, Sendable {
         var useCount: Int
         var lastUsedAt: TimeInterval
+    }
+
+    static func tmuxWorkspacePaneExactRect(
+        for panel: Panel,
+        in contentView: NSView
+    ) -> CGRect? {
+        let targetView: NSView?
+        switch panel {
+        case let terminal as TerminalPanel:
+            targetView = terminal.hostedView
+        case let browser as BrowserPanel:
+            targetView = browser.webView
+        default:
+            targetView = nil
+        }
+        guard let targetView else { return nil }
+        return tmuxWorkspacePaneExactRect(for: targetView, in: contentView)
+    }
+
+    static func tmuxWorkspacePaneExactRect(
+        for targetView: NSView,
+        in contentView: NSView
+    ) -> CGRect? {
+        guard let contentWindow = contentView.window,
+              let targetWindow = targetView.window,
+              contentWindow === targetWindow,
+              targetView.superview != nil else {
+            return nil
+        }
+
+        let rectInWindow = targetView.convert(targetView.bounds, to: nil)
+        let rectInContent = contentView.convert(rectInWindow, from: nil)
+        guard rectInContent.width > 1, rectInContent.height > 1 else { return nil }
+        return rectInContent
     }
 
     private struct CommandPaletteContextSnapshot {
