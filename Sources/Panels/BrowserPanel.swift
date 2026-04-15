@@ -6128,6 +6128,23 @@ private class BrowserNavigationDelegate: NSObject, WKNavigationDelegate {
             return
         }
 
+        // file:// URLs pointing to non-browser-renderable types (images, archives,
+        // binaries, etc.) should be revealed in Finder instead of loaded in the
+        // webview where they render as a blank page or info bar.
+        if let url = navigationAction.request.url,
+           url.isFileURL,
+           navigationAction.navigationType != .other {
+            let disposition = terminalLocalFileOpenDisposition(
+                path: url.path,
+                openInCmuxBrowser: true
+            )
+            if disposition == .revealInFinder {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+                decisionHandler(.cancel)
+                return
+            }
+        }
+
         // WebKit cannot open app-specific deeplinks (discord://, slack://, zoommtg://, etc.).
         // Hand these off to macOS so the owning app can handle them.
         if let url = navigationAction.request.url,

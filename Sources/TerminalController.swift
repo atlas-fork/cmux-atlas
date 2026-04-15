@@ -7300,6 +7300,28 @@ class TerminalController {
         let url = urlStr.flatMap { URL(string: $0) }
         let respectExternalOpenRules = v2Bool(params, "respect_external_open_rules") ?? false
 
+        // Local file URLs for non-browser-renderable types (images, archives,
+        // binaries, etc.) should be revealed in Finder, not forced into the
+        // embedded browser pane where they show as a blank info bar.
+        if let url, url.isFileURL {
+            let disposition = terminalLocalFileOpenDisposition(
+                path: url.path,
+                openInCmuxBrowser: BrowserLinkOpenSettings.openTerminalLinksInCmuxBrowser()
+            )
+            if disposition == .revealInFinder {
+                let windowId = v2ResolveWindowId(tabManager: tabManager)
+                DispatchQueue.main.async {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                return .ok([
+                    "window_id": v2OrNull(windowId?.uuidString),
+                    "opened_externally": true,
+                    "placement_strategy": "reveal_in_finder",
+                    "url": url.absoluteString
+                ])
+            }
+        }
+
         var result: V2CallResult = .err(code: "internal_error", message: "Failed to create browser", data: nil)
         v2MainSync {
             guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
@@ -7398,6 +7420,23 @@ class TerminalController {
         }
         guard let url = v2String(params, "url") else {
             return .err(code: "invalid_params", message: "Missing url", data: nil)
+        }
+
+        // Guard file:// URLs for non-browser-renderable types.
+        if let parsed = URL(string: url), parsed.isFileURL {
+            if case .revealInFinder = terminalLocalFileOpenDisposition(
+                path: parsed.path,
+                openInCmuxBrowser: BrowserLinkOpenSettings.openTerminalLinksInCmuxBrowser()
+            ) {
+                DispatchQueue.main.async {
+                    NSWorkspace.shared.activateFileViewerSelecting([parsed])
+                }
+                return .ok([
+                    "opened_externally": true,
+                    "placement_strategy": "reveal_in_finder",
+                    "url": parsed.absoluteString
+                ])
+            }
         }
 
         var result: V2CallResult = .err(code: "not_found", message: "Surface not found or not a browser", data: ["surface_id": surfaceId.uuidString])
