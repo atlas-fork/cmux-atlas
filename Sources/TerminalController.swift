@@ -16,18 +16,6 @@ extension Notification.Name {
 /// Allows automated testing and external control of terminal tabs
 @MainActor
 class TerminalController {
-    enum MemoryDiagnosticsCommandKind {
-        case history
-        case incidents
-        case metricPayloads
-        case dump
-    }
-
-    struct MemoryDiagnosticsCommandPlan: Equatable {
-        let limit: Int?
-        let reason: String?
-    }
-
     struct SocketListenerHealth: Sendable {
         let isRunning: Bool
         let acceptLoopAlive: Bool
@@ -1826,16 +1814,16 @@ class TerminalController {
             return resetSidebar(args)
 
         case "memory_history":
-            return memoryHistory(args)
+            return MemoryDiagnosticsStore.shared.recentSamplesJSON(limit: 0)
 
         case "memory_incidents":
-            return memoryIncidents(args)
+            return MemoryDiagnosticsStore.shared.recentIncidentsJSON(limit: 0)
 
         case "memory_metrickit":
-            return memoryMetricPayloads(args)
+            return MemoryDiagnosticsStore.shared.recentMetricPayloadsJSON(limit: 0)
 
         case "memory_dump":
-            return memoryDump(args)
+            return MemoryDiagnosticsStore.shared.createManualDump(reason: "removed")
 
         case "read_screen":
             return readScreenText(args)
@@ -10989,26 +10977,6 @@ class TerminalController {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private func memoryHistory(_ args: String) -> String {
-        let plan = Self.memoryDiagnosticsCommandPlan(for: .history, args: args)
-        return MemoryDiagnosticsStore.shared.recentSamplesJSON(limit: plan.limit ?? 120)
-    }
-
-    private func memoryIncidents(_ args: String) -> String {
-        let plan = Self.memoryDiagnosticsCommandPlan(for: .incidents, args: args)
-        return MemoryDiagnosticsStore.shared.recentIncidentsJSON(limit: plan.limit ?? 40)
-    }
-
-    private func memoryMetricPayloads(_ args: String) -> String {
-        let plan = Self.memoryDiagnosticsCommandPlan(for: .metricPayloads, args: args)
-        return MemoryDiagnosticsStore.shared.recentMetricPayloadsJSON(limit: plan.limit ?? 20)
-    }
-
-    private func memoryDump(_ args: String) -> String {
-        let plan = Self.memoryDiagnosticsCommandPlan(for: .dump, args: args)
-        return MemoryDiagnosticsStore.shared.createManualDump(reason: plan.reason ?? "manual_dump")
-    }
-
     private func helpText() -> String {
         var text = """
         Hierarchy: Workspace (sidebar tab) > Pane (split region) > Surface (nested tab) > Panel (terminal/browser)
@@ -14095,172 +14063,6 @@ class TerminalController {
     // MARK: - Option Parsing (sidebar metadata commands)
 
     private func tokenizeArgs(_ args: String) -> [String] {
-        let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
-
-        var tokens: [String] = []
-        var current = ""
-        var inQuote = false
-        var quoteChar: Character = "\""
-        var cursor = trimmed.startIndex
-
-        while cursor < trimmed.endIndex {
-            let char = trimmed[cursor]
-            if inQuote {
-                if char == quoteChar {
-                    inQuote = false
-                    cursor = trimmed.index(after: cursor)
-                    continue
-                }
-                if char == "\\" {
-                    let nextIndex = trimmed.index(after: cursor)
-                    if nextIndex < trimmed.endIndex {
-                        let next = trimmed[nextIndex]
-                        switch next {
-                        case "n":
-                            current.append("\n")
-                            cursor = trimmed.index(after: nextIndex)
-                            continue
-                        case "r":
-                            current.append("\r")
-                            cursor = trimmed.index(after: nextIndex)
-                            continue
-                        case "t":
-                            current.append("\t")
-                            cursor = trimmed.index(after: nextIndex)
-                            continue
-                        case "\"", "'", "\\":
-                            current.append(next)
-                            cursor = trimmed.index(after: nextIndex)
-                            continue
-                        default:
-                            break
-                        }
-                    }
-                }
-                current.append(char)
-                cursor = trimmed.index(after: cursor)
-                continue
-            }
-
-            if char == "'" || char == "\"" {
-                inQuote = true
-                quoteChar = char
-                cursor = trimmed.index(after: cursor)
-                continue
-            }
-
-            if char.isWhitespace {
-                if !current.isEmpty {
-                    tokens.append(current)
-                    current = ""
-                }
-                cursor = trimmed.index(after: cursor)
-                continue
-            }
-
-            current.append(char)
-            cursor = trimmed.index(after: cursor)
-        }
-
-        if !current.isEmpty {
-            tokens.append(current)
-        }
-        return tokens
-    }
-
-    static func memoryDiagnosticsCommandPlan(
-        for kind: MemoryDiagnosticsCommandKind,
-        args: String
-    ) -> MemoryDiagnosticsCommandPlan {
-        let options = memoryDiagnosticsOptions(args)
-
-        switch kind {
-        case .history:
-            return MemoryDiagnosticsCommandPlan(
-                limit: boundedMemoryDiagnosticsLimit(options["limit"], defaultLimit: 120, maxLimit: 500),
-                reason: nil
-            )
-        case .incidents:
-            return MemoryDiagnosticsCommandPlan(
-                limit: boundedMemoryDiagnosticsLimit(options["limit"], defaultLimit: 40, maxLimit: 200),
-                reason: nil
-            )
-        case .metricPayloads:
-            return MemoryDiagnosticsCommandPlan(
-                limit: boundedMemoryDiagnosticsLimit(options["limit"], defaultLimit: 20, maxLimit: 100),
-                reason: nil
-            )
-        case .dump:
-            return MemoryDiagnosticsCommandPlan(
-                limit: nil,
-                reason: normalizedMemoryDiagnosticsOptionValue(options["reason"]) ?? "manual_dump"
-            )
-        }
-    }
-
-    private static func boundedMemoryDiagnosticsLimit(
-        _ rawValue: String?,
-        defaultLimit: Int,
-        maxLimit: Int
-    ) -> Int {
-        max(1, min(Int(rawValue ?? "") ?? defaultLimit, maxLimit))
-    }
-
-    private static func normalizedMemoryDiagnosticsOptionValue(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-    }
-
-    private static func memoryDiagnosticsOptions(_ args: String) -> [String: String] {
-        let tokens = tokenizeMemoryDiagnosticsArgs(args)
-        guard !tokens.isEmpty else { return [:] }
-
-        var options: [String: String] = [:]
-        var stopParsingOptions = false
-        var index = 0
-
-        while index < tokens.count {
-            let token = tokens[index]
-
-            if stopParsingOptions {
-                index += 1
-                continue
-            }
-
-            if token == "--" {
-                stopParsingOptions = true
-                index += 1
-                continue
-            }
-
-            guard token.hasPrefix("--") else {
-                index += 1
-                continue
-            }
-
-            if let equalsIndex = token.firstIndex(of: "=") {
-                let key = String(token[token.index(token.startIndex, offsetBy: 2)..<equalsIndex])
-                let value = String(token[token.index(after: equalsIndex)...])
-                options[key] = value
-            } else {
-                let key = String(token.dropFirst(2))
-                if index + 1 < tokens.count && !tokens[index + 1].hasPrefix("--") {
-                    options[key] = tokens[index + 1]
-                    index += 1
-                } else {
-                    options[key] = ""
-                }
-            }
-
-            index += 1
-        }
-
-        return options
-    }
-
-    private static func tokenizeMemoryDiagnosticsArgs(_ args: String) -> [String] {
         let trimmed = args.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 

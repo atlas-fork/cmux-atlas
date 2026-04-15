@@ -4,6 +4,11 @@ All notable changes to cmux are documented here.
 
 ## [Unreleased]
 
+## [0.63.1-atlas.16] - 2026-04-15
+
+### Fixed
+- Remove MemoryDiagnostics SQLite database that caused macOS to terminate the app for excessive disk writes (137 GB from VACUUM on a 576 MB database). Memory pressure monitoring and the Ctrl-C process safeguard are preserved.
+
 ## [0.63.1-atlas.15] - 2026-04-15
 
 ### Added
