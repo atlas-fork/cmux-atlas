@@ -183,6 +183,58 @@ class TestAutoResumeOnExit(unittest.TestCase):
             finally:
                 server.shutdown()
 
+    def test_session_end_skips_resume_when_another_live_claude_session_shares_surface(self):
+        """Nested Claude sessions on the same surface should not inject resume into the parent TUI."""
+        with tempfile.TemporaryDirectory(prefix="atlas-resume-test-") as td:
+            socket_path = os.path.join(td, "cmux.sock")
+            state_path = os.path.join(td, "claude-hook-sessions.json")
+            state = FakeHookServerState(workspace_id=WORKSPACE_ID, surface_id=SURFACE_ID)
+
+            server = FakeHookUnixServer(socket_path, state)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+
+            try:
+                parent_session_id = "test-parent-session"
+                child_session_id = "test-child-session"
+                live_pid = str(os.getpid())
+
+                proc = self._run_hook(
+                    socket_path,
+                    state_path,
+                    state,
+                    "session-start",
+                    {"session_id": parent_session_id},
+                    extra_env={"CMUX_CLAUDE_PID": live_pid},
+                )
+                self.assertEqual(proc.returncode, 0, f"parent session-start failed: {proc.stderr}")
+
+                proc = self._run_hook(
+                    socket_path,
+                    state_path,
+                    state,
+                    "session-start",
+                    {"session_id": child_session_id},
+                    extra_env={"CMUX_CLAUDE_PID": live_pid},
+                )
+                self.assertEqual(proc.returncode, 0, f"child session-start failed: {proc.stderr}")
+
+                proc = self._run_hook(socket_path, state_path, state, "session-end", {"session_id": child_session_id})
+                self.assertEqual(proc.returncode, 0, f"child session-end failed: {proc.stderr}")
+
+                with state.lock:
+                    resume_calls = [
+                        r for r in state.v2_requests
+                        if r.get("method") == "surface.send_text"
+                        and "resume" in json.dumps(r.get("params", {}))
+                    ]
+                self.assertEqual(
+                    len(resume_calls), 0,
+                    f"Resume should not be injected while a sibling Claude session remains live: {resume_calls}"
+                )
+            finally:
+                server.shutdown()
+
     def test_codex_session_end_prefills_resume_on_normal_exit(self):
         """Codex session-end prefills `codex resume <id>` into the mapped surface."""
         with tempfile.TemporaryDirectory(prefix="atlas-resume-test-") as td:

@@ -2337,6 +2337,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let env = ProcessInfo.processInfo.environment
         let isRunningUnderXCTest = isRunningUnderXCTest(env)
         let telemetryEnabled = TelemetrySettings.enabledForCurrentLaunch
+        let shortVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "<unknown>"
+        let buildVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "<unknown>"
+
+        LifecycleLogStore.shared.append(
+            "applicationDidFinishLaunching version=\(shortVersion) build=\(buildVersion) " +
+                "telemetry=\(telemetryEnabled ? 1 : 0) xctest=\(isRunningUnderXCTest ? 1 : 0)"
+        )
 
         DistributedNotificationCenter.default().addObserver(
             self,
@@ -2751,6 +2758,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isTerminatingApp = true
+        LifecycleLogStore.shared.append("applicationShouldTerminate")
         _ = saveSessionSnapshot(
             includeScrollback: true,
             includeUnsafeTerminalScrollback: true,
@@ -2761,6 +2769,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminatingApp = true
+        LifecycleLogStore.shared.append("applicationWillTerminate")
         _ = saveSessionSnapshot(
             includeScrollback: true,
             includeUnsafeTerminalScrollback: true,
@@ -2784,6 +2793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func persistSessionForUpdateRelaunch() {
         isTerminatingApp = true
+        LifecycleLogStore.shared.append("persistSessionForUpdateRelaunch")
         _ = saveSessionSnapshot(
             includeScrollback: true,
             includeUnsafeTerminalScrollback: true,
@@ -11094,10 +11104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleId) {
             guard app.processIdentifier != currentPid else { continue }
-            app.terminate()
-            if !app.isTerminated {
-                _ = app.forceTerminate()
-            }
+            requestDuplicateTermination(for: app)
         }
     }
 
@@ -11124,11 +11131,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return
             }
 
-            app.terminate()
-            if !app.isTerminated {
-                _ = app.forceTerminate()
+            Task { @MainActor [weak self] in
+                self?.requestDuplicateTermination(for: app)
             }
             NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        }
+    }
+
+    private func requestDuplicateTermination(
+        for app: NSRunningApplication,
+        forceDelay: TimeInterval = 2.0
+    ) {
+        LifecycleLogStore.shared.append(
+            "duplicateTermination.request pid=\(app.processIdentifier) bundle=\(app.bundleIdentifier ?? "<nil>")"
+        )
+        app.terminate()
+
+        // NSRunningApplication.terminate() is asynchronous. An immediate isTerminated check
+        // races the normal quit path and can convert a recoverable duplicate launch into a
+        // hard kill that skips applicationShouldTerminate/applicationWillTerminate.
+        DispatchQueue.main.asyncAfter(deadline: .now() + forceDelay) {
+            guard !app.isTerminated else { return }
+            LifecycleLogStore.shared.append(
+                "duplicateTermination.force pid=\(app.processIdentifier) bundle=\(app.bundleIdentifier ?? "<nil>")"
+            )
+            _ = app.forceTerminate()
         }
     }
 

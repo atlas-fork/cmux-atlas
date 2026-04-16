@@ -479,6 +479,29 @@ private final class ClaudeHookSessionStore {
         }
     }
 
+    func hasOtherLiveSession(
+        workspaceId: String,
+        surfaceId: String,
+        excludingSessionId: String? = nil
+    ) throws -> Bool {
+        let normalizedWorkspace = normalizeOptional(workspaceId)
+        let normalizedSurface = normalizeOptional(surfaceId)
+        let excludedSessionId = normalizeOptional(excludingSessionId)
+        guard let normalizedWorkspace, let normalizedSurface else { return false }
+
+        return try withLockedState { state in
+            state.sessions.values.contains { record in
+                guard record.workspaceId == normalizedWorkspace,
+                      record.surfaceId == normalizedSurface,
+                      record.sessionId != excludedSessionId else {
+                    return false
+                }
+                guard let pid = record.pid, pid > 0 else { return false }
+                return processExists(pid)
+            }
+        }
+    }
+
     private func fallbackRecord(
         sessions: [ClaudeHookSessionRecord],
         workspaceId: String?,
@@ -555,6 +578,14 @@ private final class ClaudeHookSessionStore {
             return nil
         }
         return value
+    }
+
+    private func processExists(_ pid: Int) -> Bool {
+        errno = 0
+        if Darwin.kill(pid_t(pid), 0) == 0 {
+            return true
+        }
+        return POSIXErrorCode(rawValue: errno) != .ESRCH
     }
 }
 
@@ -11514,19 +11545,29 @@ struct CMUXCLI {
             let sessionEndReason = parsedInput.object.flatMap {
                 firstString(in: $0, keys: ["reason"])
             }?.lowercased()
+            let resolvedSurface = (try? resolveSurfaceIdForAgentHook(
+                surfaceArg ?? fallbackSurfaceId,
+                workspaceId: consumedSession?.workspaceId ?? fallbackWorkspaceId,
+                client: client
+            )) ?? consumedSession?.surfaceId ?? fallbackSurfaceId
+            let workspaceId = consumedSession?.workspaceId ?? fallbackWorkspaceId
+            let hasSiblingLiveSession = {
+                guard let resolvedSurface else { return false }
+                return (try? sessionStore.hasOtherLiveSession(
+                    workspaceId: workspaceId,
+                    surfaceId: resolvedSurface,
+                    excludingSessionId: parsedInput.sessionId
+                )) ?? false
+            }()
             if UserDefaults.standard.object(forKey: "agentAutoResumeOnExit") == nil || UserDefaults.standard.bool(forKey: "agentAutoResumeOnExit"),
+               consumedSession != nil,
                let sessionId = parsedInput.sessionId,
                sessionEndReason != "clear",
                sessionEndReason != "resume",
-               !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+               !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               !hasSiblingLiveSession {
                 let resumeCmd = claudeResumeCommand(sessionId: sessionId)
-                let resolvedSurface = try? resolveSurfaceIdForAgentHook(
-                    surfaceArg ?? fallbackSurfaceId,
-                    workspaceId: consumedSession?.workspaceId ?? fallbackWorkspaceId,
-                    client: client
-                )
-                let wsId = consumedSession?.workspaceId ?? fallbackWorkspaceId
-                var sendParams: [String: Any] = ["text": resumeCmd, "workspace_id": wsId]
+                var sendParams: [String: Any] = ["text": resumeCmd, "workspace_id": workspaceId]
                 if let sfId = resolvedSurface {
                     sendParams["surface_id"] = sfId
                 }

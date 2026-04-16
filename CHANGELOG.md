@@ -4,6 +4,19 @@ All notable changes to cmux are documented here.
 
 ## [Unreleased]
 
+## [0.63.1-atlas.17] - 2026-04-16
+
+### Added
+- Add a persistent `~/Library/Logs/cmux-lifecycle.log` with launch, quit, update-relaunch, and duplicate-instance termination breadcrumbs so silent Atlas exits leave local evidence even when macOS and Sentry do not emit a normal crash report.
+
+### Fixed
+- Stop duplicate-instance enforcement from escalating straight to `forceTerminate()` while the existing Atlas instance is still processing a normal asynchronous quit, reducing hard quits that skip `applicationShouldTerminate` and `applicationWillTerminate`.
+- Skip auto-resume prefill when another live Claude session is still mapped to the same workspace surface, so nested child sessions do not dump `claude --resume ...` into an active parent TUI chat box.
+- Guard non-renderable `file://` targets across URL-opening paths so archives, media, fonts, and similar files are revealed in Finder instead of being forced through the embedded browser path.
+
+### Tests
+- Add Atlas socket regression coverage for nested Claude session-end handling on shared surfaces.
+
 ## [0.63.1-atlas.16] - 2026-04-15
 
 ### Fixed
