@@ -69,6 +69,23 @@ private func shellSingleQuoted(_ value: String) -> String {
 
 /// Detects AI coding agents running inside terminal sessions.
 enum AISessionDetector {
+    private static let scanCacheQueue = DispatchQueue(label: "com.cmux.ai-session-detector.cache")
+    private static let maxCachedFileScans = 512
+
+    private struct EntryCacheKey: Hashable {
+        let path: String
+        let epoch: Int
+        let fileSize: UInt64
+        let modifiedAtNanoseconds: Int64
+    }
+
+    private enum EntryCacheValue {
+        case match(EntryMatch)
+        case noMatch
+    }
+
+    private static var entryScanCache: [EntryCacheKey: EntryCacheValue] = [:]
+    private static var entryScanCacheOrder: [EntryCacheKey] = []
 
     // MARK: - Process Detection
 
@@ -185,6 +202,7 @@ enum AISessionDetector {
         }
 
         var candidates: [Candidate] = []
+        var candidateFiles: [(filename: String, path: String, size: UInt64, modifiedAt: Date)] = []
 
         for filename in contents {
             guard filename.hasSuffix(".jsonl") else { continue }
@@ -193,12 +211,28 @@ enum AISessionDetector {
             guard let attrs = try? fm.attributesOfItem(atPath: filePath),
                   let mtime = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970,
                   mtime >= Double(startEpoch) else { continue }
+            let fileSize = (attrs[.size] as? UInt64) ?? 0
+            let modifiedAt = (attrs[.modificationDate] as? Date) ?? .distantPast
+            candidateFiles.append((filename: filename, path: filePath, size: fileSize, modifiedAt: modifiedAt))
+        }
 
-            let sessionId = String(filename.dropLast(6)) // remove ".jsonl"
+        candidateFiles.sort { lhs, rhs in
+            if lhs.modifiedAt == rhs.modifiedAt {
+                return lhs.filename < rhs.filename
+            }
+            return lhs.modifiedAt > rhs.modifiedAt
+        }
+
+        for file in candidateFiles {
+            let filePath = file.path
+
+            let sessionId = String(file.filename.dropLast(6)) // remove ".jsonl"
 
             guard let firstAfter = findFirstEntryAfter(
                 epoch: startEpoch,
-                inFile: filePath
+                inFile: filePath,
+                fileSize: file.size,
+                modifiedAt: file.modifiedAt
             ) else { continue }
 
             // Sessions where the match is in the first 5 lines were likely CREATED by this PID.
@@ -237,13 +271,73 @@ enum AISessionDetector {
 
     /// Scans a .jsonl file for the first entry with a timestamp >= the given epoch.
     /// Returns the line number and time delta, or nil if no match found.
-    private static func findFirstEntryAfter(epoch: Int, inFile path: String) -> EntryMatch? {
+    ///
+    /// For small files (≤ tailScanThreshold) the full file is read front-to-back so
+    /// that line numbers are accurate for the "new session" heuristic (match at line
+    /// 0-4).  For large files only the tail is read to avoid burning excessive CPU
+    /// on multi-hundred-MB session logs — the line number returned is approximate
+    /// (offset from the tail window, not from byte 0).
+    private static let tailScanThreshold: UInt64 = 512 * 1024  // 512 KB
+    private static let tailScanWindow: UInt64 = 256 * 1024     // read last 256 KB of large files
+
+    private static func findFirstEntryAfter(
+        epoch: Int,
+        inFile path: String,
+        fileSize: UInt64,
+        modifiedAt: Date
+    ) -> EntryMatch? {
+        let cacheKey = EntryCacheKey(
+            path: path,
+            epoch: epoch,
+            fileSize: fileSize,
+            modifiedAtNanoseconds: Int64((modifiedAt.timeIntervalSince1970 * 1_000_000_000).rounded())
+        )
+        if let cached = cachedEntryMatch(for: cacheKey) {
+            return cached
+        }
+
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { handle.closeFile() }
 
-        // Read in chunks to avoid loading huge files entirely into memory
+        let actualFileSize = handle.seekToEndOfFile()
+        let effectiveFileSize = fileSize == actualFileSize ? fileSize : actualFileSize
+        let result: EntryMatch?
+
+        if effectiveFileSize <= tailScanThreshold {
+            // Small file: full front-to-back scan (accurate line numbers).
+            handle.seek(toFileOffset: 0)
+            result = scanChunked(handle: handle, epoch: epoch, startLineIndex: 0)
+        } else {
+            // Large file: only read the tail. Seek back from end.
+            let tailStart = effectiveFileSize > tailScanWindow ? effectiveFileSize - tailScanWindow : 0
+            handle.seek(toFileOffset: tailStart)
+
+            // If we seeked into the middle, skip the first partial line.
+            var lineOffset = 0
+            if tailStart > 0 {
+                // Read a small buffer to find the first newline.
+                let skipBuf = handle.readData(ofLength: 8192)
+                if let nlIndex = skipBuf.firstIndex(of: UInt8(ascii: "\n")) {
+                    let bytesToSkip = skipBuf.distance(from: skipBuf.startIndex, to: nlIndex) + 1
+                    handle.seek(toFileOffset: tailStart + UInt64(bytesToSkip))
+                }
+                // Line numbers in the tail window are approximate; mark with a
+                // high base so they won't be mistaken for "line 0-4" new-session.
+                lineOffset = 10000
+            }
+
+            result = scanChunked(handle: handle, epoch: epoch, startLineIndex: lineOffset)
+        }
+
+        cacheEntryMatch(result, for: cacheKey)
+        return result
+    }
+
+    /// Read from the current file position in 64 KB chunks, returning the first
+    /// entry whose timestamp is >= epoch.
+    private static func scanChunked(handle: FileHandle, epoch: Int, startLineIndex: Int) -> EntryMatch? {
         let chunkSize = 64 * 1024
-        var lineIndex = 0
+        var lineIndex = startLineIndex
         var remainder = ""
 
         while true {
@@ -253,7 +347,6 @@ enum AISessionDetector {
             let text = remainder + (String(data: chunk, encoding: .utf8) ?? "")
             var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
 
-            // Last element might be incomplete if chunk didn't end on newline
             if chunk.count == chunkSize {
                 remainder = String(lines.removeLast())
             } else {
@@ -261,13 +354,7 @@ enum AISessionDetector {
             }
 
             for line in lines {
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty {
-                    lineIndex += 1
-                    continue
-                }
-
-                if let entryEpoch = extractTimestampEpoch(from: trimmed) {
+                if let entryEpoch = extractTimestampEpochFast(line) {
                     if entryEpoch >= epoch {
                         return EntryMatch(
                             line: lineIndex,
@@ -288,17 +375,82 @@ enum AISessionDetector {
     /// Fast timestamp extraction from a JSON line without full JSON parsing.
     /// Looks for "timestamp":"2026-03-13T14:28:09.094Z" pattern.
     private static func extractTimestampEpoch(from line: String) -> Int? {
-        // Fast path: find "timestamp":" pattern
+        extractTimestampEpochFast(line[...])
+    }
+
+    /// Substring variant — avoids allocating a String from the split result.
+    private static func extractTimestampEpochFast<S: StringProtocol>(_ line: S) -> Int? {
         guard let range = line.range(of: "\"timestamp\":\"") else { return nil }
         let afterKey = line[range.upperBound...]
         guard let endQuote = afterKey.firstIndex(of: "\"") else { return nil }
-        let tsString = String(afterKey[..<endQuote])
-
-        return parseISO8601Epoch(tsString)
+        let tsSlice = afterKey[..<endQuote]
+        return parseISO8601Epoch(tsSlice)
     }
+
+    private static func cachedEntryMatch(for key: EntryCacheKey) -> EntryMatch?? {
+        scanCacheQueue.sync {
+            switch entryScanCache[key] {
+            case .some(.match(let match)):
+                return .some(match)
+            case .some(.noMatch):
+                return .some(nil)
+            case nil:
+                return nil
+            }
+        }
+    }
+
+    private static func cacheEntryMatch(_ match: EntryMatch?, for key: EntryCacheKey) {
+        scanCacheQueue.sync {
+            entryScanCache[key] = match.map(EntryCacheValue.match) ?? .noMatch
+            entryScanCacheOrder.removeAll { $0 == key }
+            entryScanCacheOrder.append(key)
+
+            if entryScanCacheOrder.count > maxCachedFileScans {
+                let overflow = entryScanCacheOrder.count - maxCachedFileScans
+                let evictedKeys = entryScanCacheOrder.prefix(overflow)
+                for evictedKey in evictedKeys {
+                    entryScanCache.removeValue(forKey: evictedKey)
+                }
+                entryScanCacheOrder.removeFirst(overflow)
+            }
+        }
+    }
+
+#if DEBUG
+    static func debugFindFirstEntryAfter(epoch: Int, inFile path: String) -> (line: Int, epoch: Int, delta: Int)? {
+        let url = URL(fileURLWithPath: path)
+        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+              let modifiedAt = values.contentModificationDate else {
+            return nil
+        }
+        let fileSize = UInt64(values.fileSize ?? 0)
+        guard let match = findFirstEntryAfter(
+            epoch: epoch,
+            inFile: path,
+            fileSize: fileSize,
+            modifiedAt: modifiedAt
+        ) else {
+            return nil
+        }
+        return (line: match.line, epoch: match.epoch, delta: match.delta)
+    }
+
+    static func debugResetEntryScanCache() {
+        scanCacheQueue.sync {
+            entryScanCache.removeAll()
+            entryScanCacheOrder.removeAll()
+        }
+    }
+#endif
 
     /// Parse ISO8601 timestamp string to Unix epoch (seconds).
     static func parseISO8601Epoch(_ string: String) -> Int? {
+        parseISO8601Epoch(string[...])
+    }
+
+    /// Parse ISO8601 timestamp to Unix epoch. Accepts Substring to avoid copies.
+    static func parseISO8601Epoch<S: StringProtocol>(_ string: S) -> Int? {
         // Handle "2026-03-13T14:28:09.094Z" format
         // Fast manual parse to avoid DateFormatter overhead
         guard string.count >= 19 else { return nil }

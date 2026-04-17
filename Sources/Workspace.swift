@@ -5664,6 +5664,9 @@ final class Workspace: Identifiable, ObservableObject {
     @Published private(set) var cachedAISessions: [UUID: AISessionSnapshot] = [:]
     private var compatibilityActiveAISessions: [UUID: ActiveAISessionSnapshot] = [:]
     private var aiSessionRefreshGenerationByPanel: [UUID: UUID] = [:]
+    private var aiSessionRefreshPendingPanels: Set<UUID> = []
+    private var aiSessionRefreshInFlightPanels: Set<UUID> = []
+    private var aiSessionRefreshNeedsFollowUpPanels: Set<UUID> = []
     private let aiSessionRefreshQueue = DispatchQueue(
         label: "com.cmux.ai-session-refresh",
         qos: .utility
@@ -6752,6 +6755,9 @@ final class Workspace: Identifiable, ObservableObject {
         cachedAISessions = cachedAISessions.filter { validSurfaceIds.contains($0.key) }
         compatibilityActiveAISessions = compatibilityActiveAISessions.filter { validSurfaceIds.contains($0.key) }
         aiSessionRefreshGenerationByPanel = aiSessionRefreshGenerationByPanel.filter { validSurfaceIds.contains($0.key) }
+        aiSessionRefreshPendingPanels = aiSessionRefreshPendingPanels.filter { validSurfaceIds.contains($0) }
+        aiSessionRefreshInFlightPanels = aiSessionRefreshInFlightPanels.filter { validSurfaceIds.contains($0) }
+        aiSessionRefreshNeedsFollowUpPanels = aiSessionRefreshNeedsFollowUpPanels.filter { validSurfaceIds.contains($0) }
         recomputeListeningPorts()
     }
 
@@ -6775,64 +6781,125 @@ final class Workspace: Identifiable, ObservableObject {
         }
     }
 
-    private func scheduleAISessionRefresh(panelId: UUID, delay: TimeInterval = 0.4) {
-        guard panels[panelId]?.panelType == .terminal else {
-            cachedAISessions.removeValue(forKey: panelId)
-            aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
-            return
-        }
-
-        let ttyName = surfaceTTYNames[panelId]
-        let workingDirectory = panelDirectories[panelId] ?? currentDirectory
-        let generation = UUID()
-        aiSessionRefreshGenerationByPanel[panelId] = generation
-
-        aiSessionRefreshQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
-            let snapshot = AISessionDetector.detect(
-                ttyName: ttyName,
-                workingDirectory: workingDirectory
-            )
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                guard self.aiSessionRefreshGenerationByPanel[panelId] == generation else { return }
-                self.aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
-
-                guard self.panels[panelId]?.panelType == .terminal else {
-                    self.cachedAISessions.removeValue(forKey: panelId)
-                    return
-                }
-
-                if let snapshot {
-                    self.cachedAISessions[panelId] = snapshot
-                } else {
-                    self.cachedAISessions.removeValue(forKey: panelId)
-                }
-                MemoryUsageStore.shared.requestImmediateRefresh()
-            }
-        }
+    private func clearAISessionRefreshState(panelId: UUID) {
+        cachedAISessions.removeValue(forKey: panelId)
+        aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
+        aiSessionRefreshPendingPanels.remove(panelId)
+        aiSessionRefreshInFlightPanels.remove(panelId)
+        aiSessionRefreshNeedsFollowUpPanels.remove(panelId)
     }
 
-    private func refreshAISessionCacheNow(panelId: UUID) {
-        guard panels[panelId]?.panelType == .terminal else {
-            cachedAISessions.removeValue(forKey: panelId)
+    private func completeAISessionRefresh(panelId: UUID, generation: UUID?, snapshot: AISessionSnapshot?) {
+        aiSessionRefreshInFlightPanels.remove(panelId)
+
+        if let generation {
+            guard aiSessionRefreshGenerationByPanel[panelId] == generation else { return }
             aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
+        }
+
+        guard panels[panelId]?.panelType == .terminal else {
+            clearAISessionRefreshState(panelId: panelId)
             return
         }
 
-        aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
-        let ttyName = surfaceTTYNames[panelId]
-        let workingDirectory = panelDirectories[panelId] ?? currentDirectory
-        let snapshot = AISessionDetector.detect(
-            ttyName: ttyName,
-            workingDirectory: workingDirectory
-        )
         if let snapshot {
             cachedAISessions[panelId] = snapshot
         } else {
             cachedAISessions.removeValue(forKey: panelId)
         }
         MemoryUsageStore.shared.requestImmediateRefresh()
+
+        if aiSessionRefreshNeedsFollowUpPanels.remove(panelId) != nil {
+            scheduleAISessionRefresh(panelId: panelId, delay: 0.1)
+        }
+    }
+
+    private func enqueueAISessionRefreshDetection(
+        panelId: UUID,
+        generation: UUID?,
+        ttyName: String?,
+        workingDirectory: String?
+    ) {
+        aiSessionRefreshQueue.async { [weak self] in
+            LifecycleLogStore.shared.recordAISessionRefreshStarted()
+            let snapshot = AISessionDetector.detect(
+                ttyName: ttyName,
+                workingDirectory: workingDirectory
+            )
+            LifecycleLogStore.shared.recordAISessionRefreshFinished()
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.completeAISessionRefresh(
+                    panelId: panelId,
+                    generation: generation,
+                    snapshot: snapshot
+                )
+            }
+        }
+    }
+
+    private func scheduleAISessionRefresh(panelId: UUID, delay: TimeInterval = 0.4) {
+        guard panels[panelId]?.panelType == .terminal else {
+            clearAISessionRefreshState(panelId: panelId)
+            return
+        }
+
+        if aiSessionRefreshPendingPanels.contains(panelId) || aiSessionRefreshInFlightPanels.contains(panelId) {
+            aiSessionRefreshNeedsFollowUpPanels.insert(panelId)
+            return
+        }
+
+        let generation = UUID()
+        aiSessionRefreshGenerationByPanel[panelId] = generation
+        aiSessionRefreshPendingPanels.insert(panelId)
+
+        aiSessionRefreshQueue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.aiSessionRefreshPendingPanels.remove(panelId)
+                guard self.aiSessionRefreshGenerationByPanel[panelId] == generation else { return }
+                guard self.panels[panelId]?.panelType == .terminal else {
+                    self.clearAISessionRefreshState(panelId: panelId)
+                    return
+                }
+                guard !self.aiSessionRefreshInFlightPanels.contains(panelId) else {
+                    self.aiSessionRefreshNeedsFollowUpPanels.insert(panelId)
+                    return
+                }
+
+                self.aiSessionRefreshInFlightPanels.insert(panelId)
+                self.enqueueAISessionRefreshDetection(
+                    panelId: panelId,
+                    generation: generation,
+                    ttyName: self.surfaceTTYNames[panelId],
+                    workingDirectory: self.panelDirectories[panelId] ?? self.currentDirectory
+                )
+            }
+        }
+    }
+
+    private func refreshAISessionCacheNow(panelId: UUID) {
+        guard panels[panelId]?.panelType == .terminal else {
+            clearAISessionRefreshState(panelId: panelId)
+            return
+        }
+
+        if aiSessionRefreshPendingPanels.contains(panelId) || aiSessionRefreshInFlightPanels.contains(panelId) {
+            aiSessionRefreshNeedsFollowUpPanels.insert(panelId)
+            return
+        }
+
+        aiSessionRefreshGenerationByPanel.removeValue(forKey: panelId)
+        aiSessionRefreshPendingPanels.remove(panelId)
+        aiSessionRefreshNeedsFollowUpPanels.remove(panelId)
+        aiSessionRefreshInFlightPanels.insert(panelId)
+        enqueueAISessionRefreshDetection(
+            panelId: panelId,
+            generation: nil,
+            ttyName: surfaceTTYNames[panelId],
+            workingDirectory: panelDirectories[panelId] ?? currentDirectory
+        )
     }
 
     func registerActiveAISession(panelId: UUID, snapshot: ActiveAISessionSnapshot) {

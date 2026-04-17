@@ -235,6 +235,129 @@ class TestAutoResumeOnExit(unittest.TestCase):
             finally:
                 server.shutdown()
 
+    def test_session_end_resume_reason_does_not_consume_future_exit_mapping(self):
+        """An in-process /resume event must not delete the tracked session mapping."""
+        with tempfile.TemporaryDirectory(prefix="atlas-resume-test-") as td:
+            socket_path = os.path.join(td, "cmux.sock")
+            state_path = os.path.join(td, "claude-hook-sessions.json")
+            state = FakeHookServerState(workspace_id=WORKSPACE_ID, surface_id=SURFACE_ID)
+
+            server = FakeHookUnixServer(socket_path, state)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+
+            try:
+                session_id = "test-session-preserved-across-resume"
+                live_pid = str(os.getpid())
+
+                proc = self._run_hook(
+                    socket_path,
+                    state_path,
+                    state,
+                    "session-start",
+                    {"session_id": session_id},
+                    extra_env={"CMUX_CLAUDE_PID": live_pid},
+                )
+                self.assertEqual(proc.returncode, 0, f"session-start failed: {proc.stderr}")
+
+                proc = self._run_hook(
+                    socket_path,
+                    state_path,
+                    state,
+                    "session-end",
+                    {"session_id": session_id, "reason": "resume"},
+                )
+                self.assertEqual(proc.returncode, 0, f"session-end resume failed: {proc.stderr}")
+
+                with state.lock:
+                    resume_calls_after_resume_reason = [
+                        r for r in state.v2_requests
+                        if r.get("method") == "surface.send_text"
+                        and "resume" in json.dumps(r.get("params", {}))
+                    ]
+                self.assertEqual(
+                    len(resume_calls_after_resume_reason), 0,
+                    f"/resume should not inject a resume command, got: {resume_calls_after_resume_reason}"
+                )
+
+                proc = self._run_hook(socket_path, state_path, state, "session-end", {"session_id": session_id})
+                self.assertEqual(proc.returncode, 0, f"final session-end failed: {proc.stderr}")
+
+                with state.lock:
+                    resume_calls = [
+                        r for r in state.v2_requests
+                        if r.get("method") == "surface.send_text"
+                        and r.get("params", {}).get("text", "").endswith(session_id)
+                    ]
+                self.assertEqual(
+                    len(resume_calls), 1,
+                    f"Final exit should inject exactly one matching resume command, got: {resume_calls}"
+                )
+            finally:
+                server.shutdown()
+
+    def test_session_end_unknown_session_id_does_not_steal_other_surface_mapping(self):
+        """A missing session id must not fall back to another tracked Claude session on the same surface."""
+        with tempfile.TemporaryDirectory(prefix="atlas-resume-test-") as td:
+            socket_path = os.path.join(td, "cmux.sock")
+            state_path = os.path.join(td, "claude-hook-sessions.json")
+            state = FakeHookServerState(workspace_id=WORKSPACE_ID, surface_id=SURFACE_ID)
+
+            server = FakeHookUnixServer(socket_path, state)
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+
+            try:
+                tracked_session_id = "tracked-live-parent"
+                missing_session_id = "missing-session-id"
+                live_pid = str(os.getpid())
+
+                proc = self._run_hook(
+                    socket_path,
+                    state_path,
+                    state,
+                    "session-start",
+                    {"session_id": tracked_session_id},
+                    extra_env={"CMUX_CLAUDE_PID": live_pid},
+                )
+                self.assertEqual(proc.returncode, 0, f"tracked session-start failed: {proc.stderr}")
+
+                proc = self._run_hook(
+                    socket_path,
+                    state_path,
+                    state,
+                    "session-end",
+                    {"session_id": missing_session_id},
+                )
+                self.assertEqual(proc.returncode, 0, f"unknown session-end failed: {proc.stderr}")
+
+                with state.lock:
+                    resume_calls = [
+                        r for r in state.v2_requests
+                        if r.get("method") == "surface.send_text"
+                        and "resume" in json.dumps(r.get("params", {}))
+                    ]
+                self.assertEqual(
+                    len(resume_calls), 0,
+                    f"Unknown session-end should not inject a resume command, got: {resume_calls}"
+                )
+
+                proc = self._run_hook(socket_path, state_path, state, "session-end", {"session_id": tracked_session_id})
+                self.assertEqual(proc.returncode, 0, f"tracked final session-end failed: {proc.stderr}")
+
+                with state.lock:
+                    tracked_resume_calls = [
+                        r for r in state.v2_requests
+                        if r.get("method") == "surface.send_text"
+                        and r.get("params", {}).get("text", "").endswith(tracked_session_id)
+                    ]
+                self.assertEqual(
+                    len(tracked_resume_calls), 1,
+                    f"Tracked session should still inject exactly one matching resume command, got: {tracked_resume_calls}"
+                )
+            finally:
+                server.shutdown()
+
     def test_codex_session_end_prefills_resume_on_normal_exit(self):
         """Codex session-end prefills `codex resume <id>` into the mapped surface."""
         with tempfile.TemporaryDirectory(prefix="atlas-resume-test-") as td:

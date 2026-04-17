@@ -221,39 +221,25 @@ final class AtlasFeatureTests: XCTestCase {
 
     // MARK: - Memory Diagnostics
 
-    func testMemoryDiagnosticsCommandPlanClampsLimitsByCommand() {
+    func testMemoryDiagnosticsCommandsReturnStubbedEmptyPayloads() {
         XCTAssertEqual(
-            TerminalController.memoryDiagnosticsCommandPlan(for: .history, args: "--limit=0"),
-            .init(limit: 1, reason: nil)
+            MemoryDiagnosticsStore.shared.recentSamplesJSON(limit: 0),
+            #"{"samples":[]}"#
         )
         XCTAssertEqual(
-            TerminalController.memoryDiagnosticsCommandPlan(for: .history, args: "--limit 9999"),
-            .init(limit: 500, reason: nil)
+            MemoryDiagnosticsStore.shared.recentIncidentsJSON(limit: 0),
+            #"{"incidents":[]}"#
         )
         XCTAssertEqual(
-            TerminalController.memoryDiagnosticsCommandPlan(for: .incidents, args: ""),
-            .init(limit: 40, reason: nil)
-        )
-        XCTAssertEqual(
-            TerminalController.memoryDiagnosticsCommandPlan(for: .metricPayloads, args: "--limit 300"),
-            .init(limit: 100, reason: nil)
+            MemoryDiagnosticsStore.shared.recentMetricPayloadsJSON(limit: 0),
+            #"{"payloads":[]}"#
         )
     }
 
-    func testMemoryDumpCommandPlanTrimsReasonAndFallsBackWhenBlank() {
+    func testMemoryDumpCommandReturnsRemovedMessage() {
         XCTAssertEqual(
-            TerminalController.memoryDiagnosticsCommandPlan(
-                for: .dump,
-                args: "--reason \"  atlas manual  \""
-            ),
-            .init(limit: nil, reason: "atlas manual")
-        )
-        XCTAssertEqual(
-            TerminalController.memoryDiagnosticsCommandPlan(
-                for: .dump,
-                args: "--reason \"   \""
-            ),
-            .init(limit: nil, reason: "manual_dump")
+            MemoryDiagnosticsStore.shared.createManualDump(reason: "atlas manual"),
+            #"{"ok":false,"message":"Memory diagnostics database has been removed. Use an external monitoring tool."}"#
         )
     }
 
@@ -272,6 +258,52 @@ final class AtlasFeatureTests: XCTestCase {
         }
 
         XCTAssertTrue(sawSnapshot)
+    }
+
+    // MARK: - AI Session Detection
+
+    func testAISessionDetectorFindsRecentEntryInLargeJSONLFile() throws {
+        AISessionDetector.debugResetEntryScanCache()
+
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atlas-ai-session-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let oldLine = #"{"timestamp":"2026-04-17T00:00:00.000Z","type":"message"}"#
+        let newLine = #"{"timestamp":"2026-04-17T09:30:05.000Z","type":"message"}"#
+        let filler = String(repeating: oldLine + "\n", count: 12_000)
+        try (filler + newLine + "\n").write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let epoch = try XCTUnwrap(AISessionDetector.parseISO8601Epoch("2026-04-17T09:30:00.000Z"))
+        let match = try XCTUnwrap(
+            AISessionDetector.debugFindFirstEntryAfter(epoch: epoch, inFile: fileURL.path)
+        )
+
+        XCTAssertEqual(match.epoch, epoch + 5)
+        XCTAssertEqual(match.delta, 5)
+    }
+
+    func testAISessionDetectorFindsRecentEntryInSmallJSONLFile() throws {
+        AISessionDetector.debugResetEntryScanCache()
+
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atlas-ai-small-\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: fileURL) }
+
+        let content = [
+            #"{"timestamp":"2026-04-17T09:29:50.000Z","type":"message"}"#,
+            #"{"timestamp":"2026-04-17T09:30:01.000Z","type":"message"}"#,
+        ].joined(separator: "\n") + "\n"
+        try content.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let epoch = try XCTUnwrap(AISessionDetector.parseISO8601Epoch("2026-04-17T09:30:00.000Z"))
+        let match = try XCTUnwrap(
+            AISessionDetector.debugFindFirstEntryAfter(epoch: epoch, inFile: fileURL.path)
+        )
+
+        XCTAssertEqual(match.line, 1)
+        XCTAssertEqual(match.epoch, epoch + 1)
+        XCTAssertEqual(match.delta, 1)
     }
 
     // MARK: - Settings Defaults

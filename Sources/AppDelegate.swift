@@ -2255,7 +2255,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private static let commandPaletteRequestGraceInterval: TimeInterval = 1.25
     private static let commandPalettePendingOpenMaxAge: TimeInterval = 8.0
     private static let sessionAutosaveTypingQuietPeriod: TimeInterval = 0.65
-    private static let aiSessionCacheRefreshInterval: DispatchTimeInterval = .seconds(4)
+    private static let aiSessionCacheRefreshInterval: DispatchTimeInterval = .seconds(15)
 
     var updateViewModel: UpdateViewModel {
         updateController.viewModel
@@ -2340,9 +2340,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let shortVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "<unknown>"
         let buildVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "<unknown>"
 
-        LifecycleLogStore.shared.append(
-            "applicationDidFinishLaunching version=\(shortVersion) build=\(buildVersion) " +
-                "telemetry=\(telemetryEnabled ? 1 : 0) xctest=\(isRunningUnderXCTest ? 1 : 0)"
+        LifecycleLogStore.shared.recordLaunch(
+            shortVersion: shortVersion,
+            buildVersion: buildVersion,
+            telemetryEnabled: telemetryEnabled,
+            isRunningUnderXCTest: isRunningUnderXCTest
         )
 
         DistributedNotificationCenter.default().addObserver(
@@ -2418,6 +2420,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 cacheDirectoryOverride: sentryCacheDirectory,
                 dsn: sentryDSN
             )
+            if let context = LifecycleLogStore.shared.consumePendingAISessionRefreshAbnormalExitContext() {
+                sentryCaptureWarning(
+                    "previous_run_abnormal_exit_during_ai_refresh",
+                    category: "ai_refresh",
+                    data: context,
+                    contextKey: "ai_refresh"
+                )
+            }
         }
 
         if telemetryEnabled && !isRunningUnderXCTest {
@@ -2758,7 +2768,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isTerminatingApp = true
-        LifecycleLogStore.shared.append("applicationShouldTerminate")
+        LifecycleLogStore.shared.recordTerminationRequested()
         _ = saveSessionSnapshot(
             includeScrollback: true,
             includeUnsafeTerminalScrollback: true,
@@ -2769,7 +2779,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) {
         isTerminatingApp = true
-        LifecycleLogStore.shared.append("applicationWillTerminate")
+        LifecycleLogStore.shared.recordWillTerminate()
         _ = saveSessionSnapshot(
             includeScrollback: true,
             includeUnsafeTerminalScrollback: true,
@@ -2793,7 +2803,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func persistSessionForUpdateRelaunch() {
         isTerminatingApp = true
-        LifecycleLogStore.shared.append("persistSessionForUpdateRelaunch")
+        LifecycleLogStore.shared.recordExpectedRelaunch()
         _ = saveSessionSnapshot(
             includeScrollback: true,
             includeUnsafeTerminalScrollback: true,
@@ -11142,9 +11152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for app: NSRunningApplication,
         forceDelay: TimeInterval = 2.0
     ) {
-        LifecycleLogStore.shared.append(
-            "duplicateTermination.request pid=\(app.processIdentifier) bundle=\(app.bundleIdentifier ?? "<nil>")"
-        )
+        LifecycleLogStore.shared.recordDuplicateTerminationRequest(for: app)
         app.terminate()
 
         // NSRunningApplication.terminate() is asynchronous. An immediate isTerminated check
@@ -11152,9 +11160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // hard kill that skips applicationShouldTerminate/applicationWillTerminate.
         DispatchQueue.main.asyncAfter(deadline: .now() + forceDelay) {
             guard !app.isTerminated else { return }
-            LifecycleLogStore.shared.append(
-                "duplicateTermination.force pid=\(app.processIdentifier) bundle=\(app.bundleIdentifier ?? "<nil>")"
-            )
+            LifecycleLogStore.shared.recordDuplicateTerminationForce(for: app)
             _ = app.forceTerminate()
         }
     }

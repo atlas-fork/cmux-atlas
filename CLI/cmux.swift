@@ -462,9 +462,8 @@ private final class ClaudeHookSessionStore {
         let normalizedWorkspace = normalizeOptional(workspaceId)
         let normalizedSurface = normalizeOptional(surfaceId)
         return try withLockedState { state in
-            if let normalizedSessionId,
-               let removed = state.sessions.removeValue(forKey: normalizedSessionId) {
-                return removed
+            if let normalizedSessionId {
+                return state.sessions.removeValue(forKey: normalizedSessionId)
             }
 
             guard let fallback = fallbackRecord(
@@ -11523,6 +11522,18 @@ struct CMUXCLI {
 
         case "session-end":
             telemetry.breadcrumb("claude-hook.session-end")
+            let sessionEndReason = parsedInput.object.flatMap {
+                firstString(in: $0, keys: ["reason"])
+            }?.lowercased()
+
+            // Claude emits session-end for in-process /clear and /resume flows.
+            // Those are not real exits, so do not consume ownership or clear the
+            // tracked PID/session mapping.
+            if sessionEndReason == "clear" || sessionEndReason == "resume" {
+                print("OK")
+                return
+            }
+
             // Final cleanup when Claude process exits.
             // Only clear when we are the primary cleanup path (Stop didn't fire first).
             // If Stop already consumed the session, consumedSession is nil and we skip
@@ -11539,12 +11550,6 @@ struct CMUXCLI {
                 _ = try? sendV1Command("clear_notifications --tab=\(workspaceId)", client: client)
             }
 
-            // Claude reuses SessionEnd hooks for /clear and /resume within the
-            // same process, so gate on the hook reason instead of probing PID
-            // liveness. We only prefill when the session is actually ending.
-            let sessionEndReason = parsedInput.object.flatMap {
-                firstString(in: $0, keys: ["reason"])
-            }?.lowercased()
             let resolvedSurface = (try? resolveSurfaceIdForAgentHook(
                 surfaceArg ?? fallbackSurfaceId,
                 workspaceId: consumedSession?.workspaceId ?? fallbackWorkspaceId,
@@ -11562,8 +11567,6 @@ struct CMUXCLI {
             if UserDefaults.standard.object(forKey: "agentAutoResumeOnExit") == nil || UserDefaults.standard.bool(forKey: "agentAutoResumeOnExit"),
                consumedSession != nil,
                let sessionId = parsedInput.sessionId,
-               sessionEndReason != "clear",
-               sessionEndReason != "resume",
                !sessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                !hasSiblingLiveSession {
                 let resumeCmd = claudeResumeCommand(sessionId: sessionId)

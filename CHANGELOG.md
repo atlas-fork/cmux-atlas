@@ -4,6 +4,20 @@ All notable changes to cmux are documented here.
 
 ## [Unreleased]
 
+## [0.63.1-atlas.18] - 2026-04-17
+
+### Added
+- Capture a Sentry warning on next launch when the previous Atlas run died during AI session refresh, so silent resource kills leave explicit restart-time attribution.
+
+### Fixed
+- Stop Claude `session-end` hook handling from consuming tracked sessions for in-process `/resume` and `/clear` flows, and prevent unknown session IDs from hijacking another live surface mapping.
+- Reduce AI session detection CPU pressure by scanning newest Claude history files first, tail-scanning large append-only `.jsonl` logs, caching unchanged file-version scans, and coalescing per-panel refresh work instead of piling up background scans.
+- Slow Atlas AI session refresh polling from 4 seconds to 15 seconds so long-lived terminal panels do not keep re-triggering expensive detector work.
+
+### Tests
+- Add Atlas socket regression coverage for `/resume` session-end handling and unknown-session-id isolation.
+- Add unit coverage for AI session detection against small and large Claude history files, and update the memory diagnostics tests to match the current stubbed runtime behavior.
+
 ## [0.63.1-atlas.17] - 2026-04-16
 
 ### Added
