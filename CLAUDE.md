@@ -267,6 +267,15 @@ Use the `/release` command to prepare a new release. This will:
 4. Run `./scripts/bump-version.sh` to update both versions
 5. Commit, tag, and push
 
+Release-line warning:
+- Do not infer the next Atlas release number from `main` alone.
+- This repo has carried multiple Atlas version lines in history, including a clean-upstream rebuild line (`1.38.1-atlas.*`) and the active Atlas fork line (`0.63.1-atlas.*` on `feat/rebuild-ai-resume-core`).
+- Before tagging, verify the intended release series from the target branch itself:
+  - `git show HEAD:GhosttyTabs.xcodeproj/project.pbxproj | rg -m2 'MARKETING_VERSION = |CURRENT_PROJECT_VERSION = '`
+  - `git show HEAD:CHANGELOG.md | sed -n '1,20p'`
+  - `git tag --list 'v*atlas*' --sort=-creatordate | head`
+- If the branch's `MARKETING_VERSION`, `CHANGELOG.md`, and latest intended Atlas tag do not clearly agree on one release train, stop and ask before creating a release commit or tag.
+
 Version bumping:
 
 ```bash
