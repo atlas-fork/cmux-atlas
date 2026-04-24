@@ -2,6 +2,11 @@
 
 All notable changes to cmux are documented here.
 
+## [0.63.1-atlas.21] - 2026-04-25
+
+### Changed
+- Reissued the Atlas Codex hooks and Claude resume hardening release on the standard CI-triggering commit path so the normal GitHub test lanes run before the tag-published artifact
+
 ## [0.63.1-atlas.20] - 2026-04-24
 
 ### Added

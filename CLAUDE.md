@@ -265,7 +265,7 @@ For fork releases, usually use `build` so `CURRENT_PROJECT_VERSION` advances wit
 # 2. Update CHANGELOG.md
 
 # 3. Commit, tag, push
-git add -A && git commit -m "release: v0.62.2-atlas.2"
+git add -A && git commit -m "Ship Atlas v0.62.2-atlas.2"
 git tag v0.62.2-atlas.2
 git push origin main --tags
 
@@ -274,6 +274,7 @@ gh run watch --repo atlascodesai/cmux-atlas
 ```
 
 Notes:
+- Do not use a release commit subject starting with `release: `. The CI workflows skip `push` jobs whose head commit message starts with that prefix.
 - Requires GitHub secrets: `APPLE_CERTIFICATE_BASE64`, `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`.
 - The release asset is `cmux-macos.dmg` attached to the tag.
