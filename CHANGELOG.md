@@ -2,6 +2,11 @@
 
 All notable changes to cmux are documented here.
 
+## [0.63.1-atlas.22] - 2026-04-25
+
+### Fixed
+- Restored normal GitHub CI on release commits: removed the `release:`-prefixed-commit skip guards from `ci.yml`, `ci-macos-compat.yml`, `build-ghosttykit.yml`, and `nightly.yml`, and reverted aggressive `cancel-in-progress` so concurrent push runs are no longer dropped. Atlas releases now go through the same regression test lanes as any other commit before the Release workflow publishes the tag.
+
 ## [0.63.1-atlas.21] - 2026-04-25
 
 ### Changed
