@@ -1,8 +1,12 @@
 name: Nightly macOS build
 
+# Atlas fork: auto-trigger disabled. The nightly Sparkle feed in this
+# workflow (`SUFeedURL`) points at manaflow-ai/cmux's nightly channel,
+# which the fork has no permission to publish to and that no Atlas
+# user is subscribed to. Running on every main push was pure noise.
+# Keep the workflow_dispatch trigger so the workflow can still be
+# fired manually if we ever decide to revive a fork-specific nightly.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       force:
