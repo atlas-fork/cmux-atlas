@@ -2,7 +2,7 @@
 # Smoke test for CI: launch the app, send a command, verify it stays alive for 15 seconds.
 set -euo pipefail
 
-SOCKET_PATH="/tmp/cmux-debug.sock"
+SOCKET_PATH="/tmp/cmux-atlas-debug.sock"
 STABILITY_WAIT=15
 
 echo "=== Smoke Test ==="
